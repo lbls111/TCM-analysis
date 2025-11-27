@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { generateChatStream, OpenAIMessage, OpenAIToolCall, summarizeMessages } from '../services/openaiService';
 import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession } from '../types';
-import { searchHerbsForAI, FULL_HERB_LIST } from '../data/herbDatabase';
+import { searchHerbsForAI, FULL_HERB_LIST, registerDynamicHerb } from '../data/herbDatabase';
 import { fetchCloudChatSessions, saveCloudChatSession, deleteCloudChatSession } from '../services/supabaseService';
 import { MetaInfoModal } from './MetaInfoModal';
 import { ChatMemoryModal } from './ChatMemoryModal';
@@ -954,22 +954,51 @@ export const AIChatbot: React.FC<Props> = ({
               for (const tool of toolCallsResult) {
                   let result = "";
                   addLog('action', 'Tool', `Invoking: ${tool.name}`, tool.args);
+                  
                   if (tool.name === 'lookup_herb') {
                       result = searchHerbsForAI(tool.args.query);
-                  } else if (tool.name === 'update_prescription') {
+                  } 
+                  else if (tool.name === 'update_prescription') {
                       onUpdatePrescription?.(tool.args.prescription);
                       result = "Prescription updated successfully in frontend.";
-                  } else if (tool.name === 'regenerate_report') {
+                  } 
+                  else if (tool.name === 'regenerate_report') {
                       onRegenerateReport?.(tool.args.instructions);
-                      result = "Report regeneration triggered.";
-                  } else if (tool.name === 'update_meta_info') {
+                      result = "Report regeneration triggered. The system is now rewriting the report based on instructions.";
+                  } 
+                  else if (tool.name === 'update_meta_info') {
                       if (tool.args.new_info) {
                           handleMetaInfoSave(tool.args.new_info);
-                          result = "Meta info updated successfully.";
+                          result = "Meta info updated successfully. The system will now use this new context.";
                       } else {
                           result = "Failed to update meta info: content was empty.";
                       }
-                  } else {
+                  } 
+                  else if (tool.name === 'update_herb_database') {
+                       const { name, ...updates } = tool.args;
+                       let existing = FULL_HERB_LIST.find(h => h.name === name);
+                       
+                       // Create new structure if strictly necessary, or merge
+                       const newHerbData = {
+                            ...(existing || {
+                                id: `manual-${Date.now()}`,
+                                name: name,
+                                nature: '平',
+                                flavors: [],
+                                meridians: [],
+                                efficacy: '暂无',
+                                category: '药材',
+                                processing: '生用',
+                                isRaw: false
+                            }),
+                            ...updates
+                       };
+                       
+                       // Persist (Cloud + Local)
+                       await registerDynamicHerb(newHerbData, true);
+                       result = `Database successfully updated for herb: ${name}. Changes will be reflected in future calculations.`;
+                  }
+                  else {
                       result = "Unknown tool.";
                   }
 
@@ -1235,7 +1264,7 @@ export const AIChatbot: React.FC<Props> = ({
              <div className="flex justify-center my-4 animate-in fade-in">
                  <div className="bg-white border border-indigo-100 shadow-lg px-6 py-2 rounded-full flex items-center gap-3">
                      <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-                     <span className="text-xs font-bold text-indigo-700">正在查阅药典数据库...</span>
+                     <span className="text-xs font-bold text-indigo-700">正在查阅/修改数据库...</span>
                  </div>
              </div>
            )}

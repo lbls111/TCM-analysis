@@ -2,6 +2,15 @@
 
 CF云服务版 - 智能中医计算器
 
+## ⚠️ 部署配置说明 (Deployment)
+
+**请务必在部署平台（Cloudflare Pages / Vercel / Netlify）使用以下配置：**
+
+*   **构建命令 (Build Command)**: `npm run build`
+*   **输出目录 (Output Directory)**: `dist`
+
+> ❌ **不要使用** `npx vitepress build`，这是文档生成命令，会导致构建失败。
+
 ## 项目简介
 
 LogicMaster TCM 是一个基于 React 和 AI 的中医处方分析与计算引擎。它结合了传统中医理论（三焦、五味、四气）与现代计算技术，提供处方物理明细、三焦药势分布可视化以及 AI 深度推演报告。
@@ -34,13 +43,3 @@ LogicMaster TCM 是一个基于 React 和 AI 的中医处方分析与计算引�
 ## 环境变量配置
 
 本项目支持通过环境变量配置 API Key 和数据库连接。建议在本地创建 `.env` 文件进行配置（请勿将敏感的 `.env` 或 `.env.local` 文件提交到版本控制系统）。
-
-## 部署说明
-
-**重要提示**：
-本项目是 React 单页应用 (SPA)。在部署到 Cloudflare Pages、Vercel 或 Netlify 时，请确保使用以下配置：
-
-*   **构建命令 (Build Command)**: `npm run build`
-*   **输出目录 (Output Directory/Publish directory)**: `dist`
-
-(请勿使用 `vitepress build`，这是文档构建命令，不适用于本项目)

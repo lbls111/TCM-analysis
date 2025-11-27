@@ -1,4 +1,3 @@
-
 import { HerbStaticData, Temperature, Flavor, QiDirection, BenCaoHerb, BurnerWeights, AISettings } from '../types';
 import { PROCESSING_DELTAS, BURNER_RULES, DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY } from '../constants';
 import { fetchCloudHerbs, insertCloudHerb } from '../services/supabaseService';
@@ -277,13 +276,18 @@ export const loadCustomHerbs = async () => {
                 console.warn("[HerbDB] No herbs found in Cloud. Database might be empty.");
             }
         }
-    } catch (e) {
-        console.error("[HerbDB] Cloud load failed:", e);
+    } catch (e: any) {
+        // Suppress "Failed to fetch" errors which are common on init if network is down or CORS issues
+        if (e.message && e.message.includes("Failed to fetch")) {
+             console.log("[HerbDB] Offline mode: Could not connect to Supabase.");
+        } else {
+             console.warn("[HerbDB] Cloud load failed:", e);
+        }
     }
 };
 
-// Trigger load on module import
-loadCustomHerbs();
+// Trigger load on module import with safety catch
+loadCustomHerbs().catch(e => console.warn("[HerbDB] Initial auto-load prevented:", e));
 
 // ==========================================
 // 6. Herb Lookup Logic

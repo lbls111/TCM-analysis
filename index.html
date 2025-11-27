@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>LogicMaster | 智能中医计算引擎</title>
     <!-- 保持 Tailwind CDN 以简化配置，生产环境建议也通过 PostCSS 处理 -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -15,13 +15,7 @@
         --bg-soft: #f8fafc;
         --text-primary: #1e293b;
         --text-secondary: #475569;
-        
-        /* Temperature Colors */
-        --color-heat: #ef4444;       /* Red for Heat */
-        --color-warm: #f472b6;       /* Pink for Warm */
-        --color-neutral: #10b981;    /* Emerald for Neutral */
-        --color-cool: #06b6d4;       /* Cyan for Cool */
-        --color-cold: #3b82f6;       /* Blue for Cold */
+        --brand-color: #4f46e5;
       }
 
       body {
@@ -33,10 +27,16 @@
         font-family: 'Noto Sans SC', sans-serif;
         min-height: 100vh;
         overflow-x: hidden;
+        -webkit-tap-highlight-color: transparent;
       }
 
       .font-serif-sc { font-family: 'Noto Serif SC', serif; }
       .font-mono-sc { font-family: 'JetBrains Mono', monospace; }
+
+      /* Mobile Safe Area Fixes */
+      .safe-area-pb {
+        padding-bottom: env(safe-area-inset-bottom, 20px);
+      }
 
       /* Glass/Card Panel - Light Theme */
       .glass-panel {
@@ -85,6 +85,75 @@
       ::-webkit-scrollbar-track { background: transparent; }
       ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+      /* Improved Loading Screen */
+      .loading-screen {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: #f8fafc;
+        z-index: 9999;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+      }
+      
+      #root:empty + .loading-screen {
+        display: flex;
+      }
+
+      .loading-logo {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        animation: pulse 2s infinite ease-in-out;
+      }
+      
+      .loading-title {
+        font-family: 'Noto Serif SC', serif;
+        font-weight: 900;
+        font-size: 1.5rem;
+        color: #1e293b;
+        margin-bottom: 0.5rem;
+        letter-spacing: -0.02em;
+      }
+      
+      .loading-subtitle {
+        font-size: 0.875rem;
+        color: #64748b;
+        font-family: 'JetBrains Mono', monospace;
+      }
+      
+      .loading-bar {
+        width: 120px;
+        height: 4px;
+        background: #e2e8f0;
+        border-radius: 2px;
+        margin-top: 2rem;
+        overflow: hidden;
+        position: relative;
+      }
+      
+      .loading-bar::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 100%;
+        width: 40%;
+        background: #6366f1;
+        border-radius: 2px;
+        animation: progress 1.5s infinite ease-in-out;
+      }
+
+      @keyframes pulse {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.1); opacity: 0.8; }
+      }
+      
+      @keyframes progress {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(300%); }
+      }
     </style>
   <script type="importmap">
 {
@@ -104,6 +173,12 @@
 </head>
   <body>
     <div id="root"></div>
+    <div class="loading-screen">
+       <div class="loading-logo">💊</div>
+       <div class="loading-title">LogicMaster TCM</div>
+       <div class="loading-subtitle">System Initializing...</div>
+       <div class="loading-bar"></div>
+    </div>
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>
