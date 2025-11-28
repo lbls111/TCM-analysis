@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { generateChatStream, OpenAIMessage, OpenAIToolCall, summarizeMessages } from '../services/openaiService';
 import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession } from '../types';
@@ -404,6 +403,13 @@ export const AIChatbot: React.FC<Props> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const messageCountRef = useRef(0);
+  
+  // Ref to track latest meta info for async chat loop
+  const metaInfoRef = useRef(metaInfo);
+
+  useEffect(() => {
+    metaInfoRef.current = metaInfo;
+  }, [metaInfo]);
 
   const herbRegex = useMemo(() => {
       const names = FULL_HERB_LIST.map(h => h.name).sort((a, b) => b.length - a.length);
@@ -433,7 +439,7 @@ export const AIChatbot: React.FC<Props> = ({
               id: session.id,
               title: session.title,
               messages: session.messages,
-              meta_info: explicitMetaInfo || session.metaInfo || metaInfo,
+              meta_info: explicitMetaInfo || session.metaInfo || metaInfoRef.current,
               created_at: session.createdAt
           }, settings);
           addLog('success', 'Chat', 'Session synced to cloud', { sessionId });
@@ -696,6 +702,9 @@ export const AIChatbot: React.FC<Props> = ({
   const handleMetaInfoSave = async (newInfo: string) => {
       onUpdateMetaInfo(newInfo);
       
+      // Update ref immediately for current sync logic
+      metaInfoRef.current = newInfo;
+
       if (!activeSessionId) return;
 
       setSessions(prev => {
@@ -882,10 +891,13 @@ export const AIChatbot: React.FC<Props> = ({
       }
   };
 
-  const runGeneration = async (sessionId: string, history: Message[]) => {
+  const runGeneration = async (sessionId: string, history: Message[], currentMetaInfo?: string) => {
       setIsLoading(true);
       const controller = new AbortController();
       abortControllerRef.current = controller;
+
+      // Ensure we use the latest meta info, either passed explicitly from a tool update or from current ref
+      const metaToUse = currentMetaInfo ?? metaInfoRef.current;
 
       setSessions(prev => {
           const sess = { ...prev[sessionId] };
@@ -901,7 +913,7 @@ export const AIChatbot: React.FC<Props> = ({
               reportContent, 
               settings, 
               controller.signal,
-              metaInfo
+              metaToUse
           );
 
           let fullText = '';
@@ -951,6 +963,8 @@ export const AIChatbot: React.FC<Props> = ({
               
               const nextHistory = [...history, assistantMsg];
 
+              let updatedMetaInfoForRecursion = metaToUse;
+
               for (const tool of toolCallsResult) {
                   let result = "";
                   addLog('action', 'Tool', `Invoking: ${tool.name}`, tool.args);
@@ -969,6 +983,8 @@ export const AIChatbot: React.FC<Props> = ({
                   else if (tool.name === 'update_meta_info') {
                       if (tool.args.new_info) {
                           handleMetaInfoSave(tool.args.new_info);
+                          // Crucial: Update the var for the NEXT recursive call immediately
+                          updatedMetaInfoForRecursion = tool.args.new_info;
                           result = "Meta info updated successfully. The system will now use this new context.";
                       } else {
                           result = "Failed to update meta info: content was empty.";
@@ -996,7 +1012,7 @@ export const AIChatbot: React.FC<Props> = ({
                        
                        // Persist (Cloud + Local)
                        await registerDynamicHerb(newHerbData, true);
-                       result = `Database successfully updated for herb: ${name}. Changes will be reflected in future calculations.`;
+                       result = `[Database System]: Herb '${name}' successfully updated.\nNew attributes: ${JSON.stringify(updates)}\nAction completed.`;
                   }
                   else {
                       result = "Unknown tool.";
@@ -1017,7 +1033,8 @@ export const AIChatbot: React.FC<Props> = ({
                   });
               }
               
-              await runGeneration(sessionId, nextHistory);
+              // Recursive call with POTENTIALLY UPDATED meta info
+              await runGeneration(sessionId, nextHistory, updatedMetaInfoForRecursion);
           } else {
               setIsToolExecuting(false);
           }

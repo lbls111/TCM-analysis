@@ -5,6 +5,16 @@ import { AISettings, BenCaoHerb, CloudReport, CloudChatSession } from '../types'
 let supabase: SupabaseClient | null = null;
 let currentSettings: { url: string; key: string } | null = null;
 
+// Helper to gracefully handle network errors
+const handleNetworkError = (context: string, e: any) => {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed") || msg.includes("TypeError")) {
+        console.warn(`[Supabase] ${context}: Network request failed (Offline or Blocked).`);
+    } else {
+        console.error(`[Supabase] ${context} unexpected error:`, e);
+    }
+};
+
 // Initialize or get existing client
 export const getSupabaseClient = (settings: AISettings): SupabaseClient | null => {
   if (!settings.supabaseUrl || !settings.supabaseKey) return null;
@@ -43,9 +53,14 @@ export const fetchCloudHerbs = async (settings: AISettings): Promise<BenCaoHerb[
       if (error.code === '42P01' || error.message.includes('Could not find the table')) { 
           console.warn("[Supabase] Table 'herbs' does not exist.");
           return []; 
-      } else {
-          console.error("Error fetching herbs from Supabase:", error.message);
+      } 
+      
+      if (error.message.includes('Failed to fetch')) {
+          console.warn("[Supabase] fetchCloudHerbs: Network request failed.");
+          return [];
       }
+
+      console.error("Error fetching herbs from Supabase:", error.message);
       return [];
     }
 
@@ -65,7 +80,7 @@ export const fetchCloudHerbs = async (settings: AISettings): Promise<BenCaoHerb[
       source: 'cloud'
     }));
   } catch (e) {
-    console.error("Supabase fetch exception:", e);
+    handleNetworkError("fetchCloudHerbs", e);
     return [];
   }
 };
@@ -91,12 +106,16 @@ export const insertCloudHerb = async (herb: BenCaoHerb, settings: AISettings): P
       .upsert(payload, { onConflict: 'name' });
 
     if (error) {
+      if (error.message.includes('Failed to fetch')) {
+         console.warn("[Supabase] insertCloudHerb: Network request failed.");
+         return false;
+      }
       console.error("Error inserting herb to Supabase:", error.message);
       return false;
     }
     return true;
   } catch (e) {
-    console.error("Supabase insert exception:", e);
+    handleNetworkError("insertCloudHerb", e);
     return false;
   }
 };
@@ -123,6 +142,10 @@ export const updateCloudHerb = async (id: string, herb: BenCaoHerb, settings: AI
       .eq('name', herb.name);
 
     if (error) {
+      if (error.message.includes('Failed to fetch')) {
+         console.warn("[Supabase] updateCloudHerb: Network request failed.");
+         return false;
+      }
       console.error("Error updating herb in Supabase:", error.message);
       return false;
     }
@@ -133,7 +156,7 @@ export const updateCloudHerb = async (id: string, herb: BenCaoHerb, settings: AI
     }
     return true;
   } catch (e) {
-    console.error("Supabase update exception:", e);
+    handleNetworkError("updateCloudHerb", e);
     return false;
   }
 };
@@ -177,7 +200,7 @@ export const bulkUpsertHerbs = async (herbs: BenCaoHerb[], settings: AISettings)
             }
         }
     } catch (e: any) {
-        console.error("Bulk upsert exception:", e);
+        handleNetworkError("bulkUpsertHerbs", e);
         errorMessage = e.message;
         failedCount = herbs.length - successCount;
     }
@@ -207,13 +230,17 @@ export const fetchCloudReports = async (settings: AISettings): Promise<CloudRepo
   
       if (error) {
         if (!error.message.includes('Could not find the table')) {
+             if (error.message.includes('Failed to fetch')) {
+                 console.warn("[Supabase] fetchCloudReports: Network request failed.");
+                 return [];
+             }
              console.error("Error fetching reports:", error.message);
         }
         return [];
       }
       return data as CloudReport[];
     } catch (e) {
-      console.error("Supabase report fetch exception:", e);
+      handleNetworkError("fetchCloudReports", e);
       return [];
     }
 };
@@ -228,12 +255,16 @@ export const saveCloudReport = async (report: Omit<CloudReport, 'id' | 'created_
             .insert(report);
 
         if (error) {
+            if (error.message.includes('Failed to fetch')) {
+                 console.warn("[Supabase] saveCloudReport: Network request failed.");
+                 return false;
+            }
             console.error("Error saving report:", error.message);
             return false;
         }
         return true;
     } catch (e) {
-        console.error("Supabase report save exception:", e);
+        handleNetworkError("saveCloudReport", e);
         return false;
     }
 };
@@ -246,6 +277,7 @@ export const deleteCloudReport = async (id: string, settings: AISettings): Promi
         const { error } = await client.from('reports').delete().eq('id', id);
         return !error;
     } catch(e) {
+        handleNetworkError("deleteCloudReport", e);
         return false;
     }
 };
@@ -267,13 +299,17 @@ export const fetchCloudChatSessions = async (settings: AISettings): Promise<Clou
   
       if (error) {
         if (!error.message.includes('Could not find the table')) {
+            if (error.message.includes('Failed to fetch')) {
+                 console.warn("[Supabase] fetchCloudChatSessions: Network request failed.");
+                 return [];
+            }
             console.error("Error fetching chats:", error.message);
         }
         return [];
       }
       return data as CloudChatSession[];
     } catch (e) {
-      console.error("Supabase chat fetch exception:", e);
+      handleNetworkError("fetchCloudChatSessions", e);
       return [];
     }
 };
@@ -296,6 +332,10 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
             .upsert(payload);
 
         if (error) {
+            if (error.message.includes('Failed to fetch')) {
+                 console.warn("[Supabase] saveCloudChatSession: Network request failed.");
+                 return false;
+            }
             // Enhanced Error Logging for Schema Mismatch
             console.error("Error saving chat session:", error.message);
             if (error.message.includes('meta_info')) {
@@ -305,8 +345,11 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
         }
         return true;
     } catch (e: any) {
-        // Rethrow for UI handling
-        throw e;
+        handleNetworkError("saveCloudChatSession", e);
+        // Rethrow only if it's NOT a fetch error (to allow UI to show specific schema errors if needed)
+        // But preventing 'Failed to fetch' noise.
+        if (!String(e).includes("Failed to fetch")) throw e;
+        return false;
     }
 };
 
@@ -319,7 +362,7 @@ export const deleteCloudChatSession = async (id: string, settings: AISettings): 
         if (error) throw error;
         return true;
     } catch(e) {
-        console.error("Error deleting session:", e);
+        handleNetworkError("deleteCloudChatSession", e);
         return false;
     }
 };
