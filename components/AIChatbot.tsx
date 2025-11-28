@@ -385,6 +385,9 @@ export const AIChatbot: React.FC<Props> = ({
   const [isCompressing, setIsCompressing] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   
+  // Pending Meta Update State (The Bubble)
+  const [pendingMetaUpdate, setPendingMetaUpdate] = useState<string | null>(null);
+
   // Cloud Sync & Archive
   const [isSyncing, setIsSyncing] = useState(false);
   const [showCloudArchive, setShowCloudArchive] = useState(false);
@@ -723,6 +726,16 @@ export const AIChatbot: React.FC<Props> = ({
       }
   };
 
+  // Helper for Bubble Click Confirmation
+  const handleConfirmMetaUpdate = async () => {
+      if (pendingMetaUpdate) {
+          await handleMetaInfoSave(pendingMetaUpdate);
+          setPendingMetaUpdate(null);
+          addLog('success', 'Chat', 'Meta info updated via bubble suggestion');
+          alert("病历信息已根据上下文建议成功更新！");
+      }
+  };
+
   const deleteSession = async (sessionId: string, e: React.MouseEvent) => {
       e.stopPropagation();
       if (!window.confirm("确定要删除此会话吗？")) return;
@@ -982,10 +995,9 @@ export const AIChatbot: React.FC<Props> = ({
                   } 
                   else if (tool.name === 'update_meta_info') {
                       if (tool.args.new_info) {
-                          handleMetaInfoSave(tool.args.new_info);
-                          // Crucial: Update the var for the NEXT recursive call immediately
-                          updatedMetaInfoForRecursion = tool.args.new_info;
-                          result = "Meta info updated successfully. The system will now use this new context.";
+                          // MODIFIED LOGIC: Don't update immediately. Show Bubble.
+                          setPendingMetaUpdate(tool.args.new_info);
+                          result = "System Notification: The update suggestion has been presented to the user via a UI bubble. Waiting for user confirmation. Do not repeat the request.";
                       } else {
                           result = "Failed to update meta info: content was empty.";
                       }
@@ -1301,6 +1313,29 @@ export const AIChatbot: React.FC<Props> = ({
 
         {/* Input Area */}
         <div className="p-4 bg-white border-t border-slate-200 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.05)] z-30 shrink-0">
+           
+           {/* Meta Update Bubble */}
+           {pendingMetaUpdate && (
+               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 z-50 animate-in slide-in-from-bottom-2 fade-in">
+                   <div 
+                       className="bg-amber-500 text-white pl-4 pr-3 py-3 rounded-2xl shadow-xl flex items-center gap-3 cursor-pointer hover:bg-amber-600 transition-colors border-2 border-white ring-4 ring-amber-100/50"
+                       onClick={handleConfirmMetaUpdate}
+                   >
+                       <span className="text-2xl animate-pulse">📝</span>
+                       <div className="flex flex-col">
+                           <span className="text-[10px] font-bold opacity-80 uppercase tracking-wider">AI Suggestion</span>
+                           <span className="font-bold text-sm">点击更新病历信息 (Update Meta Info)</span>
+                       </div>
+                       <button 
+                           onClick={(e) => { e.stopPropagation(); setPendingMetaUpdate(null); }}
+                           className="w-6 h-6 rounded-full bg-black/20 hover:bg-black/30 flex items-center justify-center text-xs ml-2"
+                       >
+                           ✕
+                       </button>
+                   </div>
+               </div>
+           )}
+
            <div className="max-w-5xl mx-auto flex flex-col gap-2 relative">
               
               {/* File Preview */}
