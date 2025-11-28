@@ -156,34 +156,6 @@ export const QUICK_ANALYZE_SYSTEM_INSTRUCTION = `
 2. **严禁**使用 Markdown 代码块标记。
 `;
 
-const CHAT_SYSTEM_INSTRUCTION = (analysis: AnalysisResult, prescription: string, report: string | undefined, metaInfo: string): string => `
-# SYSTEM ACCESS LEVEL: ROOT / ADMINISTRATOR
-You are the **LogicMaster TCM Super-Admin**.
-You have **FULL PERMISSIONS** to read and **MODIFY** the system state.
-
-## 🛠️ ACTIVE TOOLBOX (AVAILABLE NOW)
-You have direct access to the following tools. You **MUST** use them when requested.
-1. \`update_meta_info\` -> 📝 **Modify Patient Record** (Add symptoms, history, feedback).
-2. \`update_herb_database\` -> 💊 **Modify Herb DB** (Fix nature, flavors, efficacy).
-3. \`regenerate_report\` -> 🔄 **Rewrite Analysis** (Trigger a new report generation).
-4. \`lookup_herb\` -> 🔍 Search for herb data.
-5. \`update_prescription\` -> ✏️ Modify the prescription input.
-
-## ⚠️ CRITICAL RULES (ACTION OVER SPEECH)
-1. **NO FAKE UPDATES**: Never say "I have updated the medical record" or "I have modified the database" unless you have actually emitted a Tool Call.
-2. **IMMEDIATE EXECUTION**: If the user asks to "note down", "change", "fix", or "update" something, **CALL THE TOOL IMMEDIATELY**. Do not ask for confirmation.
-3. **TRUST USER INPUT**: As Root Admin, if the user says the database is wrong, believe them and use \`update_herb_database\` to fix it.
-
-## Context Data
-- **Prescription**: ${prescription}
-- **Patient Meta Info (Medical Record)**: ${metaInfo || "(Empty - Waiting for input)"}
-- **Analysis Status**: ${report ? "Report Generated" : "No Report"}
-
-## Response Format
-- For general chat: Output clear, concise HTML.
-- For actions: **USE THE TOOL**. Do not output text describing the action, just DO IT.
-`;
-
 // ==========================================
 // 3. Helper Functions
 // ==========================================
@@ -490,23 +462,14 @@ export async function* generateChatStream(
     reportContent: string | undefined,
     settings: AISettings,
     signal: AbortSignal | undefined,
-    metaInfo: string
+    metaInfo: string,
+    systemInstruction: string 
 ): AsyncGenerator<{ text?: string, functionCalls?: {id: string, name: string, args: any}[] }, void, unknown> {
     const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
     
-    const MAX_REPORT_CHARS = 10000;
-    const safeReportContent = reportContent && reportContent.length > MAX_REPORT_CHARS 
-        ? reportContent.slice(0, MAX_REPORT_CHARS) + "\n\n[...System Note: Report truncated...]"
-        : (reportContent || "");
-
-    const MAX_META_CHARS = 5000;
-    const safeMetaInfo = metaInfo && metaInfo.length > MAX_META_CHARS
-        ? metaInfo.slice(0, MAX_META_CHARS) + "\n...[truncated]"
-        : metaInfo;
-
     const systemMsg: OpenAIMessage = {
         role: "system",
-        content: CHAT_SYSTEM_INSTRUCTION(analysis, prescription, safeReportContent, safeMetaInfo)
+        content: systemInstruction 
     };
 
     const apiHistory: OpenAIMessage[] = history.map(m => {
@@ -549,7 +512,7 @@ export async function* generateChatStream(
         return apiMsg;
     });
 
-    const MAX_CONTEXT_MESSAGES = 12;
+    const MAX_CONTEXT_MESSAGES = 70;
     let messagesToSend: OpenAIMessage[] = [];
     
     if (apiHistory.length > MAX_CONTEXT_MESSAGES) {
@@ -613,11 +576,11 @@ export async function* generateChatStream(
                 type: "function",
                 function: {
                     name: "update_meta_info",
-                    description: "Updates medical record/meta info. REQUIRED for new symptoms/background.",
+                    description: "CRITICAL: Propose an update to the medical record (Meta Info). \nRULES:\n1. You MUST read the OLD meta info first.\n2. You MUST NOT delete historical data tables (like Blood Pressure logs).\n3. You MUST APPEND new data to the correct section (e.g. by date).\n4. The `new_info` argument must be the COMPLETE text (Old Content + New Log Entry).\n5. DO NOT SUMMARIZE tables.",
                     parameters: {
                         type: "object",
                         properties: {
-                            new_info: { type: "string", description: "FULL updated text." }
+                            new_info: { type: "string", description: "The COMPLETE, merged medical record text (Old + New)." }
                         },
                         required: ["new_info"]
                     }
