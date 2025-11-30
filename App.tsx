@@ -117,9 +117,27 @@ function LogicMasterApp() {
   const [isSavingHerb, setIsSavingHerb] = useState(false);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+  
+  // Ref for handling scroll reset
+  const mainScrollRef = useRef<HTMLDivElement>(null);
 
   const isVisitorMode = userMode === UserMode.VISITOR;
   const isAdminMode = userMode === UserMode.ADMIN;
+
+  // --- Scroll Correction Logic ---
+  const handleAutoFit = () => {
+      if (mainScrollRef.current) {
+          mainScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+          addLog('info', 'System', 'View auto-corrected (Scrolled to top)');
+      }
+  };
+
+  // Auto-scroll to top when switching views or report versions
+  useEffect(() => {
+      // Small delay to ensure DOM is rendered
+      const timer = setTimeout(handleAutoFit, 100);
+      return () => clearTimeout(timer);
+  }, [view, activeReportVersion]);
 
   // --- State Reset Logic for Mode Switching ---
   const resetApplicationState = () => {
@@ -618,12 +636,8 @@ function LogicMasterApp() {
       setIsReportIncomplete(!isComplete);
       addLog('success', 'AI', 'Generation completed', { incomplete: !isComplete });
       
-      // DISABLED AUTO-UPLOAD as per user request
-      /*
-      if (isComplete && !isVisitorMode) {
-          saveCurrentReportToCloud(versionToUse, htmlContent, targetMode, false);
-      }
-      */
+      // Auto-scroll to top after generation completes
+      handleAutoFit();
 
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -675,13 +689,6 @@ function LogicMasterApp() {
       const isNowComplete = true; 
       setIsReportIncomplete(!isNowComplete);
       addLog('success', 'AI', 'Continuation successful');
-
-      // DISABLED AUTO-UPLOAD as per user request
-      /*
-      if (isNowComplete && !isVisitorMode) {
-        saveCurrentReportToCloud(activeReportVersion, finalContent, reportMeta[activeReportVersion]?.mode || 'deep', false);
-      }
-      */
 
     } catch (err: any) {
       if (err.name === 'AbortError') return;
@@ -1153,7 +1160,7 @@ function LogicMasterApp() {
 
         {/* ... (Middle Content remains the same) ... */}
         {view === ViewMode.WORKSHOP && analysis && (
-          <div className="h-full w-full overflow-y-auto p-4 lg:p-8">
+          <div ref={mainScrollRef} className="h-full w-full overflow-y-auto p-4 lg:p-8">
             <div className="max-w-[1600px] mx-auto space-y-6 md:space-y-8 animate-in slide-in-from-bottom-4 fade-in pb-24 lg:pb-8">
              <div className="flex flex-col md:grid md:grid-cols-3 gap-4 md:gap-6">
                 <div className="bg-white/80 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] shadow-xl shadow-slate-100/50 border border-white flex flex-col justify-between group hover:-translate-y-1 transition-transform duration-300 relative overflow-hidden min-h-[160px]">
@@ -1179,7 +1186,7 @@ function LogicMasterApp() {
         )}
         
         {view === ViewMode.VISUAL && analysis && (
-          <div className="h-full w-full overflow-y-auto animate-in fade-in duration-500">
+          <div ref={mainScrollRef} className="h-full w-full overflow-y-auto animate-in fade-in duration-500">
              <div className="max-w-[1600px] mx-auto pb-24 lg:pb-8">
                 <QiFlowVisualizer data={analysis.sanJiao} herbs={analysis.herbs} herbPairs={analysis.herbPairs} netVector={analysis.netVector} dynamics={analysis.dynamics} />
              </div>
@@ -1189,7 +1196,7 @@ function LogicMasterApp() {
         {/* --- PERSISTENT BACKGROUND VIEWS --- */}
         {/* We use hidden class instead of conditional rendering to keep component state alive (e.g. ongoing API calls) */}
         
-        <div className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
+        <div ref={mainScrollRef} className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
              <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">
                 <MedicalRecordManager 
                     record={medicalRecord} 
@@ -1201,7 +1208,7 @@ function LogicMasterApp() {
              </div>
         </div>
 
-        <div className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.DATABASE ? 'block' : 'hidden'}`}>
+        <div ref={mainScrollRef} className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.DATABASE ? 'block' : 'hidden'}`}>
              <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">
                 <BenCaoDatabase settings={activeAiSettings} />
              </div>
@@ -1261,7 +1268,7 @@ function LogicMasterApp() {
                   </div>
 
                   {/* Main Content Area */}
-                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 md:p-12 pb-24 lg:pb-12">
+                  <div ref={mainScrollRef} className="flex-1 overflow-y-auto custom-scrollbar min-h-0 bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 md:p-12 pb-24 lg:pb-12">
                       {aiLoading && (!reports[activeReportVersion] || reports[activeReportVersion] === '') ? (
                         <div className="h-full flex flex-col items-center justify-center text-center py-32">
                            <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mx-auto mb-6"></div>
@@ -1362,6 +1369,19 @@ function LogicMasterApp() {
         )}
 
       </main>
+      
+      {/* Floating Manual Correction Button */}
+      {view !== ViewMode.INPUT && (
+          <button 
+            onClick={handleAutoFit}
+            className="fixed bottom-24 right-6 z-50 bg-white p-3 rounded-full shadow-xl border border-slate-200 text-slate-500 hover:text-indigo-600 hover:scale-110 transition-all group"
+            title="界面校正 (Reset View)"
+          >
+             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 group-active:rotate-180 transition-transform duration-500">
+               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+             </svg>
+          </button>
+      )}
     </div>
   );
 }
