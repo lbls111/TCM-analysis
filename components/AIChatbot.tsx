@@ -154,11 +154,19 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
     if(message.role === 'tool') return null;
 
     const processMessageContent = (text: string) => {
-      if (!herbRegex || !text) return text;
+      if (!text) return "";
+      let cleanText = text.trim();
+      
+      // Clean markdown fences for HTML/XML to allow rendering
+      if (/^```(html|xml|markdown)?\s*/i.test(cleanText)) {
+          cleanText = cleanText.replace(/^```(html|xml|markdown)?\s*/i, '').replace(/\s*```$/, '');
+      }
+
+      if (!herbRegex) return cleanText;
+
       // FIX: Do not strip <think> tags completely, just trim whitespace. 
       // The user wants to see the thinking process (or we format it in service).
       // If we strip it here, and the model output IS ONLY thinking (during stream), the user sees empty bubble.
-      const cleanText = text.trim(); 
       
       return cleanText.replace(herbRegex, (match) => 
           `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`

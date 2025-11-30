@@ -327,10 +327,20 @@ function LogicMasterApp() {
   }, [FULL_HERB_LIST.length]);
 
   const processReportContent = (text: string) => {
-      if (!herbRegex || !text) return text;
+      if (!text) return "";
+      
+      // Clean markdown code fences to ensure HTML renders
+      let clean = text.trim();
+      // Remove opening ```html, ```xml, ```markdown or just ```
+      clean = clean.replace(/^```(html|xml|markdown)?\s*/i, '');
+      // Remove closing ```
+      clean = clean.replace(/\s*```$/, '');
+
+      if (!herbRegex) return clean;
+      
       // We process only text segments to inject HTML spans for herbs.
       // Since we use rehype-raw, these spans will be rendered inside Markdown.
-      return text.replace(herbRegex, (match) => 
+      return clean.replace(herbRegex, (match) => 
           `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`
       );
   };
