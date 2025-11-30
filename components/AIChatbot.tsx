@@ -149,6 +149,7 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
     const [editValue, setEditValue] = useState(message.text);
     const [isHovering, setIsHovering] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
+    const [forceRender, setForceRender] = useState(false); // New state
 
     if(message.role === 'tool') return null;
 
@@ -156,10 +157,14 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
       if (!text) return "";
       let cleanText = text;
       
-      // 1. Aggressively remove Markdown code block fences
-      cleanText = cleanText.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
-      cleanText = cleanText.replace(/```\s*$/gi, '');
-      cleanText = cleanText.replace(/```/g, ''); // Fallback for stragglers
+      // 1. INTELLIGENT EXTRACTION: If a code block exists, extract it
+      const codeBlockMatch = cleanText.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
+      if (codeBlockMatch) {
+          cleanText = codeBlockMatch[1]; 
+      } else {
+          cleanText = cleanText.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
+          cleanText = cleanText.replace(/```\s*$/gi, '');
+      }
 
       // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
       cleanText = cleanText.replace(/<!DOCTYPE html>/gi, '');
@@ -192,6 +197,15 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
           return `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`;
       });
     };
+    
+    // Auto-enable Force Render if content looks like HTML
+    useEffect(() => {
+        const clean = processMessageContent(message.text).trim();
+        const hasCodeBlock = message.text.includes('```html') || message.text.includes('```xml');
+        if (hasCodeBlock || clean.startsWith('<div') || clean.startsWith('<table') || clean.startsWith('<p') || clean.startsWith('<h')) {
+            if (!forceRender) setForceRender(true);
+        }
+    }, [message.text]);
     
     // ... rest of ChatMessageItem ...
     const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -253,25 +267,34 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                             </div>
                         </div>
                     ) : (
-                        <div 
-                          className={`prose prose-lg max-w-none ${isUser ? 'prose-invert' : 'prose-slate'} prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5`}
-                          onClick={handleClick}
-                        >
-                            <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeRaw]}
-                                components={{
-                                    a: ({node, ...props}) => <a {...props} className="text-indigo-500 underline hover:text-indigo-600 font-bold" target="_blank" rel="noreferrer" />,
-                                    table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-lg border border-slate-200 shadow-sm"><table {...props} className="min-w-full text-sm" /></div>,
-                                    th: ({node, ...props}) => <th {...props} className="bg-slate-100/50 font-bold text-left p-2 border-b" />,
-                                    td: ({node, ...props}) => <td {...props} className="p-2 border-b" />,
-                                    strong: ({node, ...props}) => <strong {...props} className="font-bold text-inherit bg-yellow-100/30 px-0.5 rounded" />,
-                                    blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-300 pl-4 py-1 italic bg-slate-50 text-slate-600 my-2 rounded-r" />,
-                                }}
+                        // Render Logic Switch
+                        forceRender ? (
+                            <div 
+                                className="prose prose-lg max-w-none prose-slate prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5"
+                                onClick={handleClick}
+                                dangerouslySetInnerHTML={{ __html: processMessageContent(message.text) }}
+                            />
+                        ) : (
+                            <div 
+                              className={`prose prose-lg max-w-none ${isUser ? 'prose-invert' : 'prose-slate'} prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5`}
+                              onClick={handleClick}
                             >
-                                {processMessageContent(message.text)}
-                            </ReactMarkdown>
-                        </div>
+                                <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    rehypePlugins={[rehypeRaw]}
+                                    components={{
+                                        a: ({node, ...props}) => <a {...props} className="text-indigo-500 underline hover:text-indigo-600 font-bold" target="_blank" rel="noreferrer" />,
+                                        table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-lg border border-slate-200 shadow-sm"><table {...props} className="min-w-full text-sm" /></div>,
+                                        th: ({node, ...props}) => <th {...props} className="bg-slate-100/50 font-bold text-left p-2 border-b" />,
+                                        td: ({node, ...props}) => <td {...props} className="p-2 border-b" />,
+                                        strong: ({node, ...props}) => <strong {...props} className="font-bold text-inherit bg-yellow-100/30 px-0.5 rounded" />,
+                                        blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-300 pl-4 py-1 italic bg-slate-50 text-slate-600 my-2 rounded-r" />,
+                                    }}
+                                >
+                                    {processMessageContent(message.text)}
+                                </ReactMarkdown>
+                            </div>
+                        )
                     )}
                 </div>
                 {/* ... action buttons ... */}
@@ -279,6 +302,17 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                     <div className={`mt-2 flex items-center gap-2 transition-opacity duration-200 ${isHovering || copySuccess ? 'opacity-100' : 'opacity-0'} ${isUser ? 'flex-row-reverse' : ''}`}>
                          {copySuccess && <span className="text-xs text-emerald-600 font-bold animate-pulse">已复制</span>}
                          
+                         {/* Force Render Toggle */}
+                         {!isUser && (
+                             <button 
+                                onClick={() => setForceRender(!forceRender)} 
+                                className={`p-1.5 rounded-lg transition-colors ${forceRender ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-100'}`}
+                                title={forceRender ? "切换回 Markdown" : "切换到强制 HTML 渲染"}
+                             >
+                                👁️
+                             </button>
+                         )}
+
                          <button onClick={handleCopy} className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors" title="复制">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5" /></svg>
                          </button>
@@ -311,7 +345,7 @@ export const AIChatbot: React.FC<Props> = ({
   analysis, 
   prescriptionInput, 
   reportContent, 
-  onUpdatePrescription,
+  onUpdatePrescription, 
   onRegenerateReport,
   onHerbClick,
   settings,

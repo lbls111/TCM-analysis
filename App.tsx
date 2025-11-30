@@ -76,6 +76,9 @@ function LogicMasterApp() {
   const [activeReportVersion, setActiveReportVersion] = useState<string>('V1');
   const [isReportIncomplete, setIsReportIncomplete] = useState(false);
   
+  // Force Render State
+  const [forceRenderMode, setForceRenderMode] = useState(false);
+  
   const [cloudReports, setCloudReports] = useState<CloudReport[]>([]);
   const [showReportHistory, setShowReportHistory] = useState(false);
   const [isSavingCloud, setIsSavingCloud] = useState(false);
@@ -276,8 +279,6 @@ function LogicMasterApp() {
   const activeAiSettings = useMemo(() => {
     if (userMode === UserMode.VISITOR) {
         // Visitor Logic: STRICT ENFORCEMENT of SiliconFlow for Visitor Mode
-        // User Requirement: Visitor Mode must use SiliconFlow API and Key, and the DeepSeek model.
-        // It must NOT use the private admin key.
         return {
             ...aiSettings,
             apiKey: VECTOR_API_KEY, 
@@ -308,12 +309,85 @@ function LogicMasterApp() {
       localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(medicalRecord));
   }, [medicalRecord]);
   
+  // =========================================================
+  // Herb Recognition Logic for Report (Memoized)
+  // =========================================================
+  const herbRegex = useMemo(() => {
+      const names = FULL_HERB_LIST.map(h => h.name).sort((a, b) => b.length - a.length);
+      if (names.length === 0) return null;
+      const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      return new RegExp(`(${escaped.join('|')})`, 'g');
+  }, [FULL_HERB_LIST.length]);
+
+  // Enhanced HTML Cleaning & Processing
+  const processReportContent = (text: string) => {
+      if (!text) return "";
+      let clean = text;
+
+      // 1. INTELLIGENT EXTRACTION: If a code block exists, extract it and ignore surrounding text
+      // This solves the issue of AI saying "Here is your report:" before the actual HTML.
+      const codeBlockMatch = clean.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
+      if (codeBlockMatch) {
+          clean = codeBlockMatch[1]; // Use only the content inside the block
+      } else {
+          // Fallback: just strip fences if they exist loosely
+          clean = clean.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
+          clean = clean.replace(/```\s*$/gi, '');
+      }
+
+      // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
+      clean = clean.replace(/<!DOCTYPE html>/gi, '');
+      clean = clean.replace(/<\/?html[^>]*>/gi, '');
+      clean = clean.replace(/<\/?head[^>]*>/gi, '');
+      clean = clean.replace(/<\/?body[^>]*>/gi, '');
+
+      // 3. Fix Indentation (De-indent)
+      // If AI indented the HTML code block, removing fences leaves indentation.
+      // 4 spaces of indentation is interpreted as a Code Block in Markdown. We must remove it.
+      const lines = clean.split('\n');
+      const indentedLineMatches = lines.filter(line => line.trim().length > 0).map(line => line.match(/^[ \t]*/)?.[0].length || 0);
+      
+      if (indentedLineMatches.length > 0) {
+          const minIndent = Math.min(...indentedLineMatches);
+          if (minIndent > 0) {
+              clean = lines.map(line => line.length >= minIndent ? line.slice(minIndent) : line).join('\n');
+          }
+      }
+
+      // 4. Inject Herb Links
+      // We process text segments to inject HTML spans for herbs.
+      // Since we use rehype-raw, these spans will be rendered correctly.
+      if (herbRegex) {
+          // Guard against replacing inside HTML attributes
+          return clean.replace(herbRegex, (match, p1, offset, string) => {
+              const before = string.slice(Math.max(0, offset - 2), offset);
+              if (before.includes('="') || before.includes("='")) return match;
+              return `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`;
+          });
+      }
+      
+      return clean;
+  };
+
   useEffect(() => {
     if (view === ViewMode.REPORT && reports[activeReportVersion]) {
         const currentReport = reports[activeReportVersion];
         // Use includes instead of endsWith for robustness against markdown/whitespace
         const isComplete = currentReport.includes('</html>') || currentReport.includes('<!-- DONE -->');
         setIsReportIncomplete(!isComplete);
+        
+        // --- AUTO FORCE RENDER LOGIC ---
+        // If content is purely HTML (starts with tag or was inside a block), force render.
+        // We use the raw report content to check for fences, or processed content to check for tags.
+        const processed = processReportContent(currentReport).trim();
+        const hasCodeBlock = currentReport.includes('```html') || currentReport.includes('```xml');
+        
+        if (hasCodeBlock || processed.startsWith('<div') || processed.startsWith('<table') || processed.startsWith('<p') || processed.startsWith('<h')) {
+            // Auto-enable Force Render Mode for better visuals
+            if (!forceRenderMode) {
+                setForceRenderMode(true);
+            }
+        }
     } else {
         setIsReportIncomplete(false);
     }
@@ -333,70 +407,6 @@ function LogicMasterApp() {
           loadHistory();
       }
   }, [view, activeAiSettings]);
-  
-  // =========================================================
-  // Herb Recognition Logic for Report (Memoized)
-  // =========================================================
-  const herbRegex = useMemo(() => {
-      const names = FULL_HERB_LIST.map(h => h.name).sort((a, b) => b.length - a.length);
-      if (names.length === 0) return null;
-      const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-      return new RegExp(`(${escaped.join('|')})`, 'g');
-  }, [FULL_HERB_LIST.length]);
-
-  // Enhanced HTML Cleaning & Processing
-  const processReportContent = (text: string) => {
-      if (!text) return "";
-      let clean = text;
-
-      // 1. Remove Markdown code block fences (opening and closing)
-      clean = clean.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
-      clean = clean.replace(/```\s*$/gi, '');
-      clean = clean.replace(/```/g, ''); // Fallback for stragglers
-
-      // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
-      // This allows the inner content (like div, table, style) to render naturally in the React component
-      clean = clean.replace(/<!DOCTYPE html>/gi, '');
-      clean = clean.replace(/<\/?html[^>]*>/gi, '');
-      clean = clean.replace(/<\/?head[^>]*>/gi, '');
-      clean = clean.replace(/<\/?body[^>]*>/gi, '');
-
-      // 3. Fix Indentation (De-indent)
-      // If AI indented the HTML code block, removing fences leaves indentation.
-      // 4 spaces of indentation is interpreted as a Code Block in Markdown. We must remove it.
-      // Strategy: Find the minimum indentation of non-empty lines and strip it.
-      const lines = clean.split('\n');
-      const indentedLineMatches = lines.filter(line => line.trim().length > 0).map(line => line.match(/^[ \t]*/)?.[0].length || 0);
-      
-      if (indentedLineMatches.length > 0) {
-          const minIndent = Math.min(...indentedLineMatches);
-          if (minIndent > 0) {
-              clean = lines.map(line => line.length >= minIndent ? line.slice(minIndent) : line).join('\n');
-          }
-      }
-
-      // 4. Inject Herb Links
-      // We process text segments to inject HTML spans for herbs.
-      // Since we use rehype-raw, these spans will be rendered correctly.
-      if (herbRegex) {
-          // We need to be careful not to replace text inside HTML attributes. 
-          // A simple regex might be risky but is usually acceptable for this specific "herb name" use case in reports.
-          // For safety, we could only replace in text nodes, but that requires a full parser. 
-          // Assuming AI report text is mostly plain text/markdown mixed with some HTML tables.
-          
-          // Simplified: Replace only if not preceded by =" or =' (very basic attribute guard)
-          // Note: This regex replacement happens on the full string.
-          return clean.replace(herbRegex, (match, p1, offset, string) => {
-              // Simple lookbehind simulation: check chars before
-              const before = string.slice(Math.max(0, offset - 2), offset);
-              if (before.includes('="') || before.includes("='")) return match;
-              
-              return `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`;
-          });
-      }
-      
-      return clean;
-  };
 
   const handleReportClick = (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
@@ -502,8 +512,6 @@ function LogicMasterApp() {
       }
   };
 
-  // --- New Logic for Saving Medical Record ---
-  // Unified with Chat Session Logic but using a specific prefix for separation
   const handleSaveMedicalRecordToCloud = async () => {
       if (isVisitorMode) {
           alert("访客模式限制：无法保存到云端。请切换至管理员模式或配置私有数据库。");
@@ -514,10 +522,7 @@ function LogicMasterApp() {
           return;
       }
       
-      // Use a distinct prefix for medical record archives to separate them from chat sessions
       const recordId = `medical_record_master_${Date.now()}`;
-      
-      // Construct a meaningful title
       let title = "电子病历存档";
       if (medicalRecord.basicInfo.name) {
           title += ` - ${medicalRecord.basicInfo.name}`;
@@ -551,7 +556,7 @@ function LogicMasterApp() {
       } catch (e: any) {
           addLog('error', 'Cloud', 'Save failed', { error: e.message });
           alert(`保存失败: ${e.message}`);
-          throw e; // Re-throw to let child component handle specific errors (e.g. SchemaError)
+          throw e; 
       }
   };
 
@@ -564,7 +569,7 @@ function LogicMasterApp() {
       return;
     }
 
-    setView(ViewMode.REPORT); // Ensure view is visible
+    setView(ViewMode.REPORT); 
     setAiLoading(true);
     setAiError(null);
     addLog('info', 'AI', `Starting AI generation mode: ${mode}`);
@@ -574,23 +579,17 @@ function LogicMasterApp() {
 
     let versionToUse = activeReportVersion;
     let targetMode: ReportMode = 'deep';
-    
-    // Determine the system prompt (User custom > Mode specific)
-    let sysPrompt = customReportPrompt; // Use custom if available/edited
+    let sysPrompt = customReportPrompt;
     
     if (mode === 'regenerate') {
         versionToUse = activeReportVersion;
         targetMode = reportMeta[versionToUse]?.mode || 'deep';
-        
-        // Reset only content, keep metadata
         setReports(prev => ({ ...prev, [versionToUse]: '' }));
-
     } else {
         const isCurrentVersionEmpty = activeReportVersion && (!reports[activeReportVersion] || reports[activeReportVersion].trim() === '');
         if (isCurrentVersionEmpty) {
             versionToUse = activeReportVersion;
         } else {
-            // Version Management: Calculate next version if not empty
             const existingVersions = Object.keys(reports);
             const maxVer = existingVersions.reduce((max, key) => {
                const num = parseInt(key.replace(/^V/, '')) || 0;
@@ -600,7 +599,6 @@ function LogicMasterApp() {
         }
         
         targetMode = mode;
-        // If it's Quick Mode, override the custom prompt with Quick Prompt UNLESS custom prompt was modified by user
         if (targetMode === 'quick' && customReportPrompt === DEFAULT_ANALYZE_SYSTEM_INSTRUCTION) {
             sysPrompt = QUICK_ANALYZE_SYSTEM_INSTRUCTION;
         }
@@ -623,7 +621,7 @@ function LogicMasterApp() {
         undefined,
         controller.signal,
         sysPrompt, 
-        medicalRecord // Pass full record including chunks
+        medicalRecord 
       );
 
       let htmlContent = '';
@@ -632,11 +630,9 @@ function LogicMasterApp() {
         setReports(prev => ({ ...prev, [versionToUse]: htmlContent }));
       }
 
-      const isComplete = true; // Assume complete if stream finishes without error
+      const isComplete = true; 
       setIsReportIncomplete(!isComplete);
       addLog('success', 'AI', 'Generation completed', { incomplete: !isComplete });
-      
-      // Auto-scroll to top after generation completes
       handleAutoFit();
 
     } catch (err: any) {
@@ -662,13 +658,10 @@ function LogicMasterApp() {
     
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    
-    // Continue with same prompt
     const sysPrompt = customReportPrompt;
 
     try {
       const partialReport = reports[activeReportVersion];
-      
       const stream = analyzePrescriptionWithAI(
         analysis,
         input,
@@ -743,12 +736,9 @@ function LogicMasterApp() {
     }
   };
   
-  // Wrapper for updating global herb database from Chatbot
   const handleUpdateHerbFromChat = (herb: Partial<BenCaoHerb>) => {
       if (herb.name) {
           addLog('action', 'Chat', `Updating herb: ${herb.name} from God Mode.`);
-          // Merge with existing if possible or create new structure
-          // This is a simplified merge, ideally should fetch existing first
           const newHerb: BenCaoHerb = {
               id: herb.id || `ai-update-${Date.now()}`,
               name: herb.name,
@@ -762,7 +752,7 @@ function LogicMasterApp() {
               isRaw: false,
               source: 'cloud'
           };
-          registerDynamicHerb(newHerb, true, activeAiSettings); // Persist to cloud
+          registerDynamicHerb(newHerb, true, activeAiSettings); 
       }
   };
 
@@ -791,7 +781,6 @@ function LogicMasterApp() {
     delete newMeta[versionToDelete];
     setReportMeta(newMeta);
 
-    // If deleting current active, switch to last available
     if (activeReportVersion === versionToDelete) {
         const remainingVersions = Object.keys(newReports);
         if (remainingVersions.length > 0) {
@@ -843,7 +832,7 @@ function LogicMasterApp() {
         const success = await updateCloudHerb(updatedHerb.id, updatedHerb, activeAiSettings);
         if (success) {
             setEditingHerb(null);
-            await loadCustomHerbs(activeAiSettings); // Refresh global list with current settings
+            await loadCustomHerbs(activeAiSettings); 
             alert("药材数据已更新！若该药材在当前处方中，请重新点击【开始演算】以应用新数据。");
         } else {
             alert("保存失败，请检查网络连接或 Supabase 权限。");
@@ -1243,6 +1232,19 @@ function LogicMasterApp() {
                       </div>
 
                       <div className="flex gap-2 items-center flex-wrap justify-end w-full md:w-auto">
+                           {/* Force Render Toggle */}
+                           <button 
+                                onClick={() => setForceRenderMode(!forceRenderMode)}
+                                className={`text-xs font-bold px-3 py-2 rounded-lg border flex items-center gap-1 transition-all ${
+                                    forceRenderMode 
+                                    ? 'bg-amber-100 text-amber-800 border-amber-300 shadow-inner' 
+                                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                                }`}
+                                title="切换到原生HTML渲染模式 (用于修复复杂表格/布局显示问题)"
+                           >
+                               <span>{forceRenderMode ? '👁️ 强制渲染: ON' : '👁️ 强制渲染: OFF'}</span>
+                           </button>
+
                            {aiLoading ? (
                                 <button onClick={handleStopAI} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100 hover:bg-red-100 flex items-center gap-1 animate-pulse">🛑 停止</button>
                             ) : (
@@ -1286,28 +1288,36 @@ function LogicMasterApp() {
                         </div>
                       ) : reports[activeReportVersion] ? (
                          <div className="flex flex-col gap-6">
-                            {/* Updated Markdown Rendering */}
-                            <div className="prose prose-indigo prose-lg max-w-none prose-table:border-collapse prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-100" onClick={handleReportClick}>
-                              <ReactMarkdown 
-                                remarkPlugins={[remarkGfm]} 
-                                rehypePlugins={[rehypeRaw]}
-                                components={{
-                                  a: ({node, ...props}) => <a {...props} className="text-indigo-600 underline hover:text-indigo-800" />,
-                                  table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 shadow-sm"><table {...props} className="min-w-full" /></div>,
-                                  th: ({node, ...props}) => <th {...props} className="bg-slate-50 text-slate-700 font-bold px-4 py-3 text-left border-b border-slate-200" />,
-                                  td: ({node, ...props}) => <td {...props} className="px-4 py-3 border-b border-slate-100 text-slate-600" />,
-                                  blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-500 pl-4 italic text-slate-600 bg-slate-50 py-2 rounded-r-lg my-4" />,
-                                  ul: ({node, ...props}) => <ul {...props} className="list-disc list-outside ml-6 space-y-1 my-4" />,
-                                  ol: ({node, ...props}) => <ol {...props} className="list-decimal list-outside ml-6 space-y-1 my-4" />,
-                                  h1: ({node, ...props}) => <h1 {...props} className="text-3xl font-bold text-slate-900 mt-8 mb-4 border-b border-slate-100 pb-2" />,
-                                  h2: ({node, ...props}) => <h2 {...props} className="text-2xl font-bold text-slate-800 mt-6 mb-3 flex items-center gap-2 after:content-[''] after:h-px after:flex-1 after:bg-slate-100 after:ml-4" />,
-                                  h3: ({node, ...props}) => <h3 {...props} className="text-xl font-bold text-indigo-700 mt-4 mb-2" />,
-                                  strong: ({node, ...props}) => <strong {...props} className="font-bold text-slate-900 bg-slate-100 px-1 rounded" />,
-                                }}
-                              >
-                                {processReportContent(reports[activeReportVersion])}
-                              </ReactMarkdown>
-                            </div>
+                            {/* Rendering Logic: Toggle between ReactMarkdown and Raw HTML */}
+                            {forceRenderMode ? (
+                                <div 
+                                    className="prose prose-indigo prose-lg max-w-none prose-table:border-collapse prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-100"
+                                    onClick={handleReportClick}
+                                    dangerouslySetInnerHTML={{ __html: processReportContent(reports[activeReportVersion]) }}
+                                />
+                            ) : (
+                                <div className="prose prose-indigo prose-lg max-w-none prose-table:border-collapse prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-100" onClick={handleReportClick}>
+                                <ReactMarkdown 
+                                    remarkPlugins={[remarkGfm]} 
+                                    rehypePlugins={[rehypeRaw]}
+                                    components={{
+                                    a: ({node, ...props}) => <a {...props} className="text-indigo-600 underline hover:text-indigo-800" />,
+                                    table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 shadow-sm"><table {...props} className="min-w-full" /></div>,
+                                    th: ({node, ...props}) => <th {...props} className="bg-slate-50 text-slate-700 font-bold px-4 py-3 text-left border-b border-slate-200" />,
+                                    td: ({node, ...props}) => <td {...props} className="px-4 py-3 border-b border-slate-100 text-slate-600" />,
+                                    blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-500 pl-4 italic text-slate-600 bg-slate-50 py-2 rounded-r-lg my-4" />,
+                                    ul: ({node, ...props}) => <ul {...props} className="list-disc list-outside ml-6 space-y-1 my-4" />,
+                                    ol: ({node, ...props}) => <ol {...props} className="list-decimal list-outside ml-6 space-y-1 my-4" />,
+                                    h1: ({node, ...props}) => <h1 {...props} className="text-3xl font-bold text-slate-900 mt-8 mb-4 border-b border-slate-100 pb-2" />,
+                                    h2: ({node, ...props}) => <h2 {...props} className="text-2xl font-bold text-slate-800 mt-6 mb-3 flex items-center gap-2 after:content-[''] after:h-px after:flex-1 after:bg-slate-100 after:ml-4" />,
+                                    h3: ({node, ...props}) => <h3 {...props} className="text-xl font-bold text-indigo-700 mt-4 mb-2" />,
+                                    strong: ({node, ...props}) => <strong {...props} className="font-bold text-slate-900 bg-slate-100 px-1 rounded" />,
+                                    }}
+                                >
+                                    {processReportContent(reports[activeReportVersion])}
+                                </ReactMarkdown>
+                                </div>
+                            )}
 
                             {isReportIncomplete && (
                                 <div className="mt-4 text-center animate-in fade-in">
@@ -1374,7 +1384,7 @@ function LogicMasterApp() {
       {view !== ViewMode.INPUT && (
           <button 
             onClick={handleAutoFit}
-            className="fixed bottom-24 right-6 z-50 bg-white p-3 rounded-full shadow-xl border border-slate-200 text-slate-500 hover:text-indigo-600 hover:scale-110 transition-all group"
+            className="fixed bottom-24 right-6 z-50 bg-white p-4 rounded-full shadow-2xl shadow-indigo-200/50 border border-slate-200 text-slate-500 hover:text-indigo-600 hover:scale-110 transition-all group"
             title="界面校正 (Reset View)"
           >
              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 group-active:rotate-180 transition-transform duration-500">
