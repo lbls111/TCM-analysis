@@ -1,4 +1,3 @@
-
 // ... (Imports remain same)
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { generateChatStream, OpenAIMessage, OpenAIToolCall, summarizeMessages, createEmptyMedicalRecord, CHAT_SYSTEM_INSTRUCTION_BASE, createEmbedding } from '../services/openaiService';
@@ -155,22 +154,43 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
 
     const processMessageContent = (text: string) => {
       if (!text) return "";
-      let cleanText = text.trim();
+      let cleanText = text;
       
-      // Clean markdown fences for HTML/XML to allow rendering
-      if (/^```(html|xml|markdown)?\s*/i.test(cleanText)) {
-          cleanText = cleanText.replace(/^```(html|xml|markdown)?\s*/i, '').replace(/\s*```$/, '');
+      // 1. Aggressively remove Markdown code block fences
+      cleanText = cleanText.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
+      cleanText = cleanText.replace(/```\s*$/gi, '');
+      cleanText = cleanText.replace(/```/g, ''); // Fallback for stragglers
+
+      // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
+      cleanText = cleanText.replace(/<!DOCTYPE html>/gi, '');
+      cleanText = cleanText.replace(/<\/?html[^>]*>/gi, '');
+      cleanText = cleanText.replace(/<\/?head[^>]*>/gi, '');
+      cleanText = cleanText.replace(/<\/?body[^>]*>/gi, '');
+
+      // 3. Fix Indentation (De-indent)
+      // If AI indented the HTML code block, removing fences leaves indentation.
+      // 4 spaces of indentation is interpreted as a Code Block in Markdown. We must remove it.
+      const lines = cleanText.split('\n');
+      const indentedLineMatches = lines.filter(line => line.trim().length > 0).map(line => line.match(/^[ \t]*/)?.[0].length || 0);
+      
+      if (indentedLineMatches.length > 0) {
+          const minIndent = Math.min(...indentedLineMatches);
+          if (minIndent > 0) {
+              cleanText = lines.map(line => line.length >= minIndent ? line.slice(minIndent) : line).join('\n');
+          }
       }
 
       if (!herbRegex) return cleanText;
 
-      // FIX: Do not strip <think> tags completely, just trim whitespace. 
-      // The user wants to see the thinking process (or we format it in service).
-      // If we strip it here, and the model output IS ONLY thinking (during stream), the user sees empty bubble.
+      // FIX: Do not strip <think> tags completely here, handled in service or UI
       
-      return cleanText.replace(herbRegex, (match) => 
-          `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`
-      );
+      return cleanText.replace(herbRegex, (match, p1, offset, string) => {
+          // Simple guard: don't replace inside attributes
+          const before = string.slice(Math.max(0, offset - 2), offset);
+          if (before.includes('="') || before.includes("='")) return match;
+          
+          return `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`;
+      });
     };
     
     // ... rest of ChatMessageItem ...

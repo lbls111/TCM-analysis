@@ -532,10 +532,6 @@ export async function* analyzePrescriptionWithAI(
                             // DeepSeek: Skip <think> content if user wants raw output, but streaming is tricky. 
                             // For report generation, we often want just the result. 
                             // However, filtering <think> in stream is hard. We assume user accepts think trace or model obeys system prompt.
-                            let cleanChunk = chunk.replace("```html", "").replace("```", "");
-                            // NOTE: We do NOT strip markdown fences here anymore.
-                            // We stream raw content and let the frontend wrapper (App.tsx) handle "unwrapping" the code block 
-                            // if it's detected as a full HTML wrapper. This avoids partial stripping issues.
                             yield chunk;
                         }
                     } catch (e) {}

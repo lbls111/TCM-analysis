@@ -326,23 +326,58 @@ function LogicMasterApp() {
       return new RegExp(`(${escaped.join('|')})`, 'g');
   }, [FULL_HERB_LIST.length]);
 
+  // Enhanced HTML Cleaning & Processing
   const processReportContent = (text: string) => {
       if (!text) return "";
-      
-      // Clean markdown code fences to ensure HTML renders
-      let clean = text.trim();
-      // Remove opening ```html, ```xml, ```markdown or just ```
-      clean = clean.replace(/^```(html|xml|markdown)?\s*/i, '');
-      // Remove closing ```
-      clean = clean.replace(/\s*```$/, '');
+      let clean = text;
 
-      if (!herbRegex) return clean;
+      // 1. Remove Markdown code block fences (opening and closing)
+      clean = clean.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
+      clean = clean.replace(/```\s*$/gi, '');
+      clean = clean.replace(/```/g, ''); // Fallback for stragglers
+
+      // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
+      // This allows the inner content (like div, table, style) to render naturally in the React component
+      clean = clean.replace(/<!DOCTYPE html>/gi, '');
+      clean = clean.replace(/<\/?html[^>]*>/gi, '');
+      clean = clean.replace(/<\/?head[^>]*>/gi, '');
+      clean = clean.replace(/<\/?body[^>]*>/gi, '');
+
+      // 3. Fix Indentation (De-indent)
+      // If AI indented the HTML code block, removing fences leaves indentation.
+      // 4 spaces of indentation is interpreted as a Code Block in Markdown. We must remove it.
+      // Strategy: Find the minimum indentation of non-empty lines and strip it.
+      const lines = clean.split('\n');
+      const indentedLineMatches = lines.filter(line => line.trim().length > 0).map(line => line.match(/^[ \t]*/)?.[0].length || 0);
       
-      // We process only text segments to inject HTML spans for herbs.
-      // Since we use rehype-raw, these spans will be rendered inside Markdown.
-      return clean.replace(herbRegex, (match) => 
-          `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`
-      );
+      if (indentedLineMatches.length > 0) {
+          const minIndent = Math.min(...indentedLineMatches);
+          if (minIndent > 0) {
+              clean = lines.map(line => line.length >= minIndent ? line.slice(minIndent) : line).join('\n');
+          }
+      }
+
+      // 4. Inject Herb Links
+      // We process text segments to inject HTML spans for herbs.
+      // Since we use rehype-raw, these spans will be rendered correctly.
+      if (herbRegex) {
+          // We need to be careful not to replace text inside HTML attributes. 
+          // A simple regex might be risky but is usually acceptable for this specific "herb name" use case in reports.
+          // For safety, we could only replace in text nodes, but that requires a full parser. 
+          // Assuming AI report text is mostly plain text/markdown mixed with some HTML tables.
+          
+          // Simplified: Replace only if not preceded by =" or =' (very basic attribute guard)
+          // Note: This regex replacement happens on the full string.
+          return clean.replace(herbRegex, (match, p1, offset, string) => {
+              // Simple lookbehind simulation: check chars before
+              const before = string.slice(Math.max(0, offset - 2), offset);
+              if (before.includes('="') || before.includes("='")) return match;
+              
+              return `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`;
+          });
+      }
+      
+      return clean;
   };
 
   const handleReportClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -926,7 +961,7 @@ function LogicMasterApp() {
 
   return (
     <div 
-      className={`min-h-screen w-full flex flex-col relative bg-[#f8fafc] text-slate-900 ${fontSettings.family} selection:bg-indigo-100 selection:text-indigo-900`}
+      className={`h-screen w-screen flex flex-col overflow-hidden bg-[#f8fafc] text-slate-900 ${fontSettings.family} selection:bg-indigo-100 selection:text-indigo-900`}
       style={{ fontSize: `${fontSettings.scale}rem` }}
     >
       <PromptEditorModal 
@@ -1024,7 +1059,7 @@ function LogicMasterApp() {
       )}
 
       {view !== ViewMode.INPUT && (
-        <header className="fixed top-0 z-50 w-full h-16 bg-white/80 backdrop-blur-xl border-b border-white shadow-sm flex items-center justify-between px-4 lg:px-6 transition-all">
+        <header className="flex-none h-16 bg-white/80 backdrop-blur-xl border-b border-white shadow-sm flex items-center justify-between px-4 lg:px-6 transition-all z-50">
           <div className="flex items-center gap-3">
              <div className="flex items-center gap-2 cursor-pointer" onClick={() => {
                   setView(ViewMode.INPUT);
@@ -1099,10 +1134,10 @@ function LogicMasterApp() {
 
       <MobileBottomNav currentView={view} setView={setView} />
 
-      <main className={`flex-1 w-full z-10 ${view !== ViewMode.INPUT ? 'pt-24 pb-24 lg:pb-8 px-4 lg:px-8' : 'flex items-center justify-center p-6 pb-24'}`}>
+      <main className={`flex-1 overflow-hidden relative ${view === ViewMode.INPUT ? 'flex items-center justify-center p-6' : 'w-full'}`}>
         
         {view === ViewMode.INPUT && (
-          <div className="w-full max-w-3xl animate-in zoom-in-95 duration-500">
+          <div className="w-full max-w-3xl animate-in zoom-in-95 duration-500 overflow-y-auto max-h-full p-4">
              <div className="text-center mb-8 md:mb-12">
                 <div className="w-20 h-20 md:w-24 md:h-24 mx-auto bg-gradient-to-br from-white to-slate-50 rounded-3xl shadow-xl shadow-indigo-100/50 flex items-center justify-center text-4xl md:text-5xl mb-6 ring-1 ring-slate-100 text-indigo-600 transform hover:scale-105 transition-transform duration-500">💊</div>
                 <h1 className="text-3xl md:text-6xl font-black font-serif-sc text-slate-900 mb-4 tracking-tight">LogicMaster <span className="text-indigo-600">TCM</span></h1>
@@ -1118,7 +1153,8 @@ function LogicMasterApp() {
 
         {/* ... (Middle Content remains the same) ... */}
         {view === ViewMode.WORKSHOP && analysis && (
-          <div className="space-y-6 md:space-y-8 animate-in slide-in-from-bottom-4 fade-in max-w-[1600px] mx-auto">
+          <div className="h-full w-full overflow-y-auto p-4 lg:p-8">
+            <div className="max-w-[1600px] mx-auto space-y-6 md:space-y-8 animate-in slide-in-from-bottom-4 fade-in pb-24 lg:pb-8">
              <div className="flex flex-col md:grid md:grid-cols-3 gap-4 md:gap-6">
                 <div className="bg-white/80 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] shadow-xl shadow-slate-100/50 border border-white flex flex-col justify-between group hover:-translate-y-1 transition-transform duration-300 relative overflow-hidden min-h-[160px]">
                    <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl opacity-20 -translate-y-1/2 translate-x-1/2 ${getPTILabel(analysis.totalPTI).bg.replace('bg-', 'bg-')}`}></div>
@@ -1138,36 +1174,43 @@ function LogicMasterApp() {
                 </div>
              </div>
              {renderCalculationTable(analysis)}
+            </div>
           </div>
         )}
         
         {view === ViewMode.VISUAL && analysis && (
-          <div className="h-full animate-in fade-in duration-500 max-w-[1600px] mx-auto">
-             <QiFlowVisualizer data={analysis.sanJiao} herbs={analysis.herbs} herbPairs={analysis.herbPairs} netVector={analysis.netVector} dynamics={analysis.dynamics} />
+          <div className="h-full w-full overflow-y-auto animate-in fade-in duration-500">
+             <div className="max-w-[1600px] mx-auto pb-24 lg:pb-8">
+                <QiFlowVisualizer data={analysis.sanJiao} herbs={analysis.herbs} herbPairs={analysis.herbPairs} netVector={analysis.netVector} dynamics={analysis.dynamics} />
+             </div>
           </div>
         )}
 
         {/* --- PERSISTENT BACKGROUND VIEWS --- */}
         {/* We use hidden class instead of conditional rendering to keep component state alive (e.g. ongoing API calls) */}
         
-        <div className={`h-full animate-in zoom-in-95 max-w-[1600px] mx-auto ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
-             <MedicalRecordManager 
-                record={medicalRecord} 
-                onUpdate={setMedicalRecord} 
-                onSaveToCloud={handleSaveMedicalRecordToCloud}
-                isAdminMode={isAdminMode}
-                settings={activeAiSettings} // Pass settings for fetching history
-             />
+        <div className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
+             <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">
+                <MedicalRecordManager 
+                    record={medicalRecord} 
+                    onUpdate={setMedicalRecord} 
+                    onSaveToCloud={handleSaveMedicalRecordToCloud}
+                    isAdminMode={isAdminMode}
+                    settings={activeAiSettings} // Pass settings for fetching history
+                />
+             </div>
         </div>
 
-        <div className={`h-full animate-in zoom-in-95 max-w-[1600px] mx-auto ${view === ViewMode.DATABASE ? 'block' : 'hidden'}`}>
-             <BenCaoDatabase settings={activeAiSettings} />
+        <div className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.DATABASE ? 'block' : 'hidden'}`}>
+             <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">
+                <BenCaoDatabase settings={activeAiSettings} />
+             </div>
         </div>
 
-        <div className={`max-w-[1800px] mx-auto w-full animate-in zoom-in-95 flex flex-col gap-6 h-full ${view === ViewMode.REPORT ? 'block' : 'hidden'}`}>
-              <div className="flex-1 flex flex-col gap-6 h-full min-w-0">
+        <div className={`h-full w-full flex flex-col animate-in zoom-in-95 ${view === ViewMode.REPORT ? 'flex' : 'hidden'}`}>
+              <div className="flex-1 flex flex-col h-full min-w-0 max-w-[1800px] mx-auto w-full p-4 lg:p-6 gap-6">
                   {/* Persistent Report Toolbar */}
-                  <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex-shrink-0 sticky top-0 z-40">
+                  <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex-shrink-0 z-40">
                       <div className="flex items-center gap-3">
                           <span className="font-bold text-slate-800 text-lg">分析报告</span>
                           {Object.keys(reports).length > 0 && (
@@ -1218,7 +1261,7 @@ function LogicMasterApp() {
                   </div>
 
                   {/* Main Content Area */}
-                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 md:p-12">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 md:p-12 pb-24 lg:pb-12">
                       {aiLoading && (!reports[activeReportVersion] || reports[activeReportVersion] === '') ? (
                         <div className="h-full flex flex-col items-center justify-center text-center py-32">
                            <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mx-auto mb-6"></div>
@@ -1290,23 +1333,25 @@ function LogicMasterApp() {
               </div>
            </div>
 
-        <div className={`h-[calc(100vh-8rem)] max-w-[1600px] mx-auto animate-in zoom-in-95 flex flex-col ${view === ViewMode.AI_CHAT && analysis ? 'block' : 'hidden'}`}>
-             {analysis && (
-                 <AIChatbot 
-                    analysis={analysis} 
-                    prescriptionInput={input} 
-                    reportContent={reports[activeReportVersion]} 
-                    onUpdatePrescription={handleUpdatePrescriptionFromChat}
-                    onRegenerateReport={(instr) => handleAskAI('regenerate', instr)}
-                    onHerbClick={handleHerbClick}
-                    settings={activeAiSettings}
-                    medicalRecord={medicalRecord}
-                    onUpdateMedicalRecord={setMedicalRecord}
-                    onUpdateHerb={handleUpdateHerbFromChat} // Pass the new handler
-                    isVisitorMode={isVisitorMode}
-                    isAdminMode={isAdminMode}
-                 />
-             )}
+        <div className={`h-full w-full flex flex-col animate-in zoom-in-95 ${view === ViewMode.AI_CHAT && analysis ? 'flex' : 'hidden'}`}>
+             <div className="flex-1 max-w-[1600px] mx-auto w-full p-4 lg:p-6 lg:pb-6 pb-24 h-full min-h-0">
+                 {analysis && (
+                     <AIChatbot 
+                        analysis={analysis} 
+                        prescriptionInput={input} 
+                        reportContent={reports[activeReportVersion]} 
+                        onUpdatePrescription={handleUpdatePrescriptionFromChat}
+                        onRegenerateReport={(instr) => handleAskAI('regenerate', instr)}
+                        onHerbClick={handleHerbClick}
+                        settings={activeAiSettings}
+                        medicalRecord={medicalRecord}
+                        onUpdateMedicalRecord={setMedicalRecord}
+                        onUpdateHerb={handleUpdateHerbFromChat} // Pass the new handler
+                        isVisitorMode={isVisitorMode}
+                        isAdminMode={isAdminMode}
+                     />
+                 )}
+             </div>
         </div>
         
         {view === ViewMode.AI_CHAT && !analysis && (
