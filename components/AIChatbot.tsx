@@ -326,6 +326,12 @@ export const AIChatbot: React.FC<Props> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const messageCountRef = useRef(0);
   
+  // Ref for latest Medical Record to ensure async tool calls access latest state
+  const medicalRecordRef = useRef(medicalRecord);
+  useEffect(() => {
+      medicalRecordRef.current = medicalRecord;
+  }, [medicalRecord]);
+  
   const herbRegex = useMemo(() => {
       const names = FULL_HERB_LIST.map(h => h.name).sort((a, b) => b.length - a.length);
       if (names.length === 0) return null;
@@ -410,7 +416,7 @@ export const AIChatbot: React.FC<Props> = ({
               id: session.id,
               title: session.title,
               messages: session.messages,
-              medical_record: explicitMedicalRecord || session.medicalRecord || medicalRecord,
+              medical_record: explicitMedicalRecord || session.medicalRecord || medicalRecordRef.current,
               created_at: session.createdAt
           }, settings);
           addLog('success', 'Chat', 'Session synced to cloud', { sessionId });
@@ -488,7 +494,7 @@ export const AIChatbot: React.FC<Props> = ({
               reportContent, 
               settings, 
               controller.signal,
-              medicalRecord, 
+              medicalRecordRef.current, // USE REF for latest state
               customSystemPrompt
           );
 
@@ -564,9 +570,10 @@ export const AIChatbot: React.FC<Props> = ({
                           createdAt: Date.now()
                       };
                       
+                      // Use Ref for latest base
                       const updatedRecord = {
-                          ...medicalRecord,
-                          knowledgeChunks: [...medicalRecord.knowledgeChunks, newChunk]
+                          ...medicalRecordRef.current,
+                          knowledgeChunks: [...medicalRecordRef.current.knowledgeChunks, newChunk]
                       };
                       onUpdateMedicalRecord(updatedRecord);
                       showToast(`AI 已追加病历: ${category}`);
@@ -574,10 +581,10 @@ export const AIChatbot: React.FC<Props> = ({
                   }
                   else if (tool.name === 'update_knowledge_chunk') {
                       const { chunkId, newContent } = tool.args;
-                      const targetChunkIndex = medicalRecord.knowledgeChunks.findIndex(c => c.id === chunkId);
+                      const targetChunkIndex = medicalRecordRef.current.knowledgeChunks.findIndex(c => c.id === chunkId);
                       
                       if (targetChunkIndex !== -1) {
-                          const oldChunk = medicalRecord.knowledgeChunks[targetChunkIndex];
+                          const oldChunk = medicalRecordRef.current.knowledgeChunks[targetChunkIndex];
                           const updatedChunk = {
                               ...oldChunk,
                               content: newContent,
@@ -585,10 +592,10 @@ export const AIChatbot: React.FC<Props> = ({
                               embedding: undefined 
                           };
                           
-                          const newChunks = [...medicalRecord.knowledgeChunks];
+                          const newChunks = [...medicalRecordRef.current.knowledgeChunks];
                           newChunks[targetChunkIndex] = updatedChunk;
                           
-                          onUpdateMedicalRecord({ ...medicalRecord, knowledgeChunks: newChunks });
+                          onUpdateMedicalRecord({ ...medicalRecordRef.current, knowledgeChunks: newChunks });
                           showToast(`AI 已修正病历 ID: ${chunkId.slice(0,6)}`);
                           result = `Chunk ${chunkId} updated successfully. Embedding cleared.`;
                       } else {
@@ -603,7 +610,7 @@ export const AIChatbot: React.FC<Props> = ({
                   }
                   else if (tool.name === 'update_medical_record_full') {
                       // tool.args contains partial { name, age, tcmDiagnosis ... }
-                      const newRecord = { ...medicalRecord, basicInfo: { ...medicalRecord.basicInfo }, diagnosis: { ...medicalRecord.diagnosis } };
+                      const newRecord = { ...medicalRecordRef.current, basicInfo: { ...medicalRecordRef.current.basicInfo }, diagnosis: { ...medicalRecordRef.current.diagnosis } };
                       if (tool.args.name) newRecord.basicInfo.name = tool.args.name;
                       if (tool.args.age) newRecord.basicInfo.age = tool.args.age;
                       if (tool.args.gender) newRecord.basicInfo.gender = tool.args.gender;

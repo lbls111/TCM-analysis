@@ -573,9 +573,12 @@ function LogicMasterApp() {
       setIsReportIncomplete(!isComplete);
       addLog('success', 'AI', 'Generation completed', { incomplete: !isComplete });
       
+      // DISABLED AUTO-UPLOAD as per user request
+      /*
       if (isComplete && !isVisitorMode) {
           saveCurrentReportToCloud(versionToUse, htmlContent, targetMode, false);
       }
+      */
 
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -628,9 +631,12 @@ function LogicMasterApp() {
       setIsReportIncomplete(!isNowComplete);
       addLog('success', 'AI', 'Continuation successful');
 
+      // DISABLED AUTO-UPLOAD as per user request
+      /*
       if (isNowComplete && !isVisitorMode) {
         saveCurrentReportToCloud(activeReportVersion, finalContent, reportMeta[activeReportVersion]?.mode || 'deep', false);
       }
+      */
 
     } catch (err: any) {
       if (err.name === 'AbortError') return;
