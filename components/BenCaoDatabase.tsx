@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { BenCaoHerb, AISettings } from '../types';
 import { FULL_HERB_LIST, HERB_ALIASES, loadCustomHerbs } from '../data/herbDatabase'; 
@@ -8,6 +7,10 @@ import { EditHerbModal } from './EditHerbModal';
 import { parseRawPharmacopoeiaText } from '../utils/pharmacopoeiaParser';
 import { bulkUpsertHerbs, updateCloudHerb } from '../services/supabaseService';
 import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY } from '../constants';
+
+interface Props {
+    settings?: AISettings;
+}
 
 // Helper Component for Highlighting
 const HighlightText = ({ text, highlight }: { text: string, highlight: string }) => {
@@ -31,7 +34,7 @@ const HighlightText = ({ text, highlight }: { text: string, highlight: string })
   );
 };
 
-const BenCaoDatabase: React.FC = () => {
+const BenCaoDatabase: React.FC<Props> = ({ settings }) => {
   const [herbs, setHerbs] = useState<BenCaoHerb[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedNature, setSelectedNature] = useState<string>('全部');
@@ -55,10 +58,11 @@ const BenCaoDatabase: React.FC = () => {
   useEffect(() => {
     // Initial load from the global list, which is populated on app start
     setHerbs([...FULL_HERB_LIST]);
-  }, []);
+  }, [FULL_HERB_LIST.length]); // React to changes in the global list
 
   const refreshHerbs = async () => {
-      await loadCustomHerbs();
+      // Use props settings if available to ensure we use the correct key (e.g. Visitor Default)
+      await loadCustomHerbs(settings);
       setHerbs([...FULL_HERB_LIST]);
   };
 
@@ -101,12 +105,15 @@ const BenCaoDatabase: React.FC = () => {
     return 'text-emerald-600 bg-emerald-50 border-emerald-200';
   };
   
+  // Use passed settings or fallback to LS/Defaults
   const getSettings = (): AISettings => {
+    if (settings) return settings;
+    
     const savedSettings = localStorage.getItem("logicmaster_ai_settings");
-    let settings: AISettings = savedSettings ? JSON.parse(savedSettings) : {};
-    if (!settings.supabaseUrl) settings.supabaseUrl = DEFAULT_SUPABASE_URL;
-    if (!settings.supabaseKey) settings.supabaseKey = DEFAULT_SUPABASE_KEY;
-    return settings;
+    let localSettings: AISettings = savedSettings ? JSON.parse(savedSettings) : {};
+    if (!localSettings.supabaseUrl) localSettings.supabaseUrl = DEFAULT_SUPABASE_URL;
+    if (!localSettings.supabaseKey) localSettings.supabaseKey = DEFAULT_SUPABASE_KEY;
+    return localSettings;
   };
 
   const handleParse = () => {
@@ -124,8 +131,8 @@ const BenCaoDatabase: React.FC = () => {
       setIsUploading(true);
       setImportError(null);
       
-      const settings = getSettings();
-      const { success, failed, error } = await bulkUpsertHerbs(parsedHerbs, settings);
+      const currentSettings = getSettings();
+      const { success, failed, error } = await bulkUpsertHerbs(parsedHerbs, currentSettings);
       
       setIsUploading(false);
 
@@ -154,8 +161,8 @@ const BenCaoDatabase: React.FC = () => {
   const saveHerbChanges = async (updatedHerb: BenCaoHerb) => {
       setIsSaving(true);
       try {
-        const settings = getSettings();
-        const success = await updateCloudHerb(updatedHerb.id, updatedHerb, settings);
+        const currentSettings = getSettings();
+        const success = await updateCloudHerb(updatedHerb.id, updatedHerb, currentSettings);
         if (success) {
             setEditingHerb(null);
             await refreshHerbs();
@@ -364,8 +371,11 @@ create policy "Public delete access" on herbs for delete using (true);`;
         }) : (
             <div className="col-span-full text-center py-20 text-stone-400">
                 <div className="text-4xl mb-4">📭</div>
-                <p>暂无数据，请点击右上角“导入”按钮添加药典数据。</p>
-                <p className="text-xs mt-2">如果看到错误提示"Could not find table"，请点击导入窗口中的初始化按钮。</p>
+                <h3 className="text-xl font-bold text-slate-700 mb-2">数据库已连接，但暂无数据</h3>
+                <p className="max-w-md mx-auto">您的云数据库表 `herbs` 目前是空的。这不是连接错误，而是初始化后的正常状态。</p>
+                <p className="text-xs mt-4 bg-indigo-50 text-indigo-700 inline-block px-4 py-2 rounded-lg font-bold border border-indigo-100">
+                    请点击右上角的“批量导入”按钮，粘贴《中国药典》文本以录入数据。
+                </p>
             </div>
         )}
       </div>

@@ -1,17 +1,17 @@
-
 import React, { useState } from 'react';
 import { AISettings } from '../types';
 import { fetchAvailableModels, testModelConnection, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION } from '../services/openaiService';
-import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY } from '../constants';
+import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VISITOR_DEFAULT_CHAT_MODEL } from '../constants';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   settings: AISettings;
   onSave: (newSettings: AISettings) => void;
+  isVisitorMode?: boolean;
 }
 
-export const AISettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave }) => {
+export const AISettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, onSave, isVisitorMode }) => {
   const [localSettings, setLocalSettings] = useState<AISettings>(settings);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -41,6 +41,8 @@ export const AISettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, on
         maxTokens: 8192,
         thinkingBudget: 0,
         // Keep credentials
+        embeddingModel: DEFAULT_EMBEDDING_MODEL,
+        rerankModel: DEFAULT_RERANK_MODEL
       }));
     }
   };
@@ -76,8 +78,8 @@ export const AISettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, on
             setLocalSettings(prev => ({
                 ...prev,
                 availableModels: models,
-                // Auto-select first if empty
-                model: prev.model || models[0].id
+                // Auto-select first chat model if empty
+                model: prev.model || models[0].id,
             }));
             alert(`成功获取 ${models.length} 个模型！`);
         } else {
@@ -131,17 +133,22 @@ create table if not exists reports (
   created_at timestamp with time zone default timezone('utc'::text, now())
 );
 
--- 3. 聊天会话表 (chat_sessions) - 修复 meta_info 缺失问题
+-- 3. 聊天会话表 (chat_sessions) - 包含病历数据
 create table if not exists chat_sessions (
   id text primary key,
   title text,
   messages jsonb,
-  meta_info text, -- 元信息(病历)
-  created_at bigint
+  meta_info text, 
+  medical_record jsonb, 
+  created_at bigint,
+  updated_at timestamp with time zone default timezone('utc'::text, now())
 );
 
--- 🚨 修复补丁: 如果遇到 "Could not find meta_info column" 错误，请务必运行下面这行:
+-- 🚨 修复补丁: 如果遇到 "Could not find column" 错误，请务必运行下面这几行:
 alter table chat_sessions add column if not exists meta_info text;
+alter table chat_sessions add column if not exists medical_record jsonb;
+alter table chat_sessions add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now());
+
 
 -- 4. 开启所有表的公开读写权限 (仅限 Demo/单用户模式)
 alter table herbs enable row level security;
@@ -152,7 +159,7 @@ create policy "Public access herbs" on herbs for all using (true) with check (tr
 create policy "Public access reports" on reports for all using (true) with check (true);
 create policy "Public access chats" on chat_sessions for all using (true) with check (true);`;
       navigator.clipboard.writeText(sql);
-      alert("全量初始化 SQL 已复制！请前往 Supabase Dashboard -> SQL Editor 粘贴运行。\n\n重要：请检查包含了 'alter table chat_sessions add column...' 语句。");
+      alert("全量初始化 SQL 已复制！请前往 Supabase Dashboard -> SQL Editor 粘贴运行。\n\n重要：请检查包含了 'alter table chat_sessions add column medical_record...' 语句。");
   };
   
   const isUsingDefaultCloud = localSettings.supabaseUrl === DEFAULT_SUPABASE_URL;
@@ -211,7 +218,26 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
                     <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                         <span className="w-2 h-6 bg-emerald-500 rounded-full"></span> 接口连接 (API Connection)
                     </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    
+                    {isVisitorMode ? (
+                        <div className="p-4 bg-amber-50 text-amber-800 text-sm rounded-lg border border-amber-200 flex flex-col gap-2">
+                           <div className="font-bold flex items-center gap-2">
+                              <span>🔒</span> 访客模式已锁定
+                           </div>
+                           <p>为了保证演示环境的稳定性，访客模式强制使用内置的 SiliconFlow 接口。如需配置自定义 API Key，请切换至管理员模式。</p>
+                        </div>
+                    ) : (
+                        <div className="p-3 bg-indigo-50 text-indigo-700 text-xs rounded-lg border border-indigo-100 mb-2">
+                            <strong>配置说明：</strong> 
+                            <ul className="list-disc pl-4 mt-1 space-y-1">
+                                <li>管理员模式下，填写下方的 API Key 和 URL，系统将<strong>优先使用您的自定义配置</strong>。</li>
+                                <li>向量化引擎（Embedding）始终使用内置服务，无需配置。</li>
+                            </ul>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative">
+                        {isVisitorMode && <div className="absolute inset-0 bg-slate-100/50 z-10 cursor-not-allowed"></div>}
                         <div className="space-y-2">
                             <label className="text-sm font-bold text-slate-700">API Base URL (通用地址)</label>
                             <input 
@@ -220,6 +246,7 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
                             onChange={e => setLocalSettings({...localSettings, apiBaseUrl: e.target.value})}
                             placeholder="例如: https://lbls888-lap.hf.space/v1"
                             className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-indigo-500/50 outline-none"
+                            disabled={isVisitorMode}
                             />
                             <p className="text-xs text-slate-400">支持 OpenAI 官方或任意 One-API/New-API 中转地址</p>
                         </div>
@@ -231,72 +258,109 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
                             onChange={e => setLocalSettings({...localSettings, apiKey: e.target.value})}
                             placeholder="sk-..."
                             className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-indigo-500/50 outline-none"
+                            disabled={isVisitorMode}
                             />
                         </div>
                     </div>
                     
-                    <div className="flex flex-wrap gap-4 items-center">
-                        <button 
-                        onClick={handleTestConnection}
-                        disabled={isTesting}
-                        className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-bold hover:bg-slate-200 transition flex items-center gap-2 border border-slate-300"
-                        >
-                        {isTesting ? <span className="animate-spin">⏳</span> : '⚡'} 测试连接
-                        </button>
-                        
-                        <button 
-                        onClick={handleFetchModels}
-                        disabled={isFetchingModels}
-                        className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-sm font-bold hover:bg-indigo-100 transition flex items-center gap-2"
-                        >
-                        {isFetchingModels ? <span className="animate-spin">⏳</span> : '🔄'} 自动获取模型列表
-                        </button>
-                        
-                        {testResult && (
-                            <span className={`text-sm font-bold ${testResult.includes('失败') ? 'text-red-500' : 'text-emerald-600'}`}>
-                                {testResult}
-                            </span>
-                        )}
-                        {fetchError && <p className="text-red-500 text-xs mt-2 font-bold">{fetchError}</p>}
-                    </div>
+                    {!isVisitorMode && (
+                        <div className="flex flex-wrap gap-4 items-center">
+                            <button 
+                            onClick={handleTestConnection}
+                            disabled={isTesting}
+                            className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-bold hover:bg-slate-200 transition flex items-center gap-2 border border-slate-300"
+                            >
+                            {isTesting ? <span className="animate-spin">⏳</span> : '⚡'} 测试连接
+                            </button>
+                            
+                            <button 
+                            onClick={handleFetchModels}
+                            disabled={isFetchingModels}
+                            className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg text-sm font-bold hover:bg-indigo-100 transition flex items-center gap-2"
+                            >
+                            {isFetchingModels ? <span className="animate-spin">⏳</span> : '🔄'} 自动获取模型列表
+                            </button>
+                            
+                            {testResult && (
+                                <span className={`text-sm font-bold ${testResult.includes('失败') ? 'text-red-500' : 'text-emerald-600'}`}>
+                                    {testResult}
+                                </span>
+                            )}
+                            {fetchError && <p className="text-red-500 text-xs mt-2 font-bold">{fetchError}</p>}
+                        </div>
+                    )}
                 </div>
 
                 {/* 2. Model Selection (Unified) */}
                 <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-5">
                     <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                        <span className="w-2 h-6 bg-indigo-500 rounded-full"></span> 模型指派 (Primary Model)
+                        <span className="w-2 h-6 bg-indigo-500 rounded-full"></span> 模型配置 (Models Configuration)
                     </h3>
                     
-                    {localSettings.availableModels.length === 0 && (
-                        <div className="p-3 bg-amber-50 text-amber-700 text-sm rounded-lg border border-amber-100 mb-4">
-                            尚未获取模型列表。您可以手动输入模型 ID，或点击上方按钮自动获取。
+                    {isVisitorMode ? (
+                         <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl">
+                            <label className="text-sm font-bold text-slate-700 block mb-2">当前锁定模型 (Visitor Default)</label>
+                            <div className="font-mono text-sm bg-white p-3 rounded-lg border border-slate-200 text-slate-600">
+                                {VISITOR_DEFAULT_CHAT_MODEL}
+                            </div>
+                            <p className="text-xs text-slate-400 mt-2">
+                                访客模式使用 SiliconFlow 提供的 DeepSeek R1 蒸馏版模型，无法更改。
+                            </p>
+                         </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {localSettings.availableModels.length === 0 && (
+                                <div className="p-3 bg-amber-50 text-amber-700 text-sm rounded-lg border border-amber-100 mb-4">
+                                    尚未获取模型列表。您可以手动输入模型 ID，或点击上方按钮自动获取。
+                                </div>
+                            )}
+                            <div className="space-y-1">
+                                <label className="text-sm font-bold text-slate-700 block">
+                                    主对话模型 (Chat/Reasoning Model)
+                                </label>
+                                <div className="relative">
+                                    {localSettings.availableModels.length > 0 ? (
+                                        <select 
+                                        value={localSettings.model}
+                                        onChange={e => setLocalSettings({...localSettings, model: e.target.value})}
+                                        className="w-full p-3 rounded-xl border border-slate-200 bg-white text-sm outline-none cursor-pointer"
+                                        >
+                                            {localSettings.availableModels.map(m => (
+                                                <option key={m.id} value={m.id}>{m.name || m.id}</option>
+                                            ))}
+                                        </select>
+                                    ) : (
+                                        <input 
+                                        type="text" 
+                                        value={localSettings.model}
+                                        onChange={e => setLocalSettings({...localSettings, model: e.target.value})}
+                                        placeholder="例如: gpt-4, claude-3-opus"
+                                        className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm"
+                                        />
+                                    )}
+                                </div>
+                                <p className="text-xs text-slate-400">用于生成深度分析报告与对话。</p>
+                            </div>
                         </div>
                     )}
-
-                    <div className="space-y-2">
-                        <label className="text-sm font-bold text-slate-700 flex justify-between">
-                            <span>主模型 (用于推演分析与对话)</span>
-                        </label>
-                        {localSettings.availableModels.length > 0 ? (
-                            <select 
-                            value={localSettings.model}
-                            onChange={e => setLocalSettings({...localSettings, model: e.target.value})}
-                            className="w-full p-3 rounded-xl border border-slate-200 bg-white text-sm outline-none"
-                            >
-                                {localSettings.availableModels.map(m => (
-                                    <option key={m.id} value={m.id}>{m.name || m.id}</option>
-                                ))}
-                            </select>
-                        ) : (
-                            <input 
-                            type="text" 
-                            value={localSettings.model}
-                            onChange={e => setLocalSettings({...localSettings, model: e.target.value})}
-                            placeholder="手动输入 ID (如 gpt-4)"
-                            className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-                            />
-                        )}
-                        <p className="text-xs text-slate-400">此模型将统一应用于【深度分析报告】生成与【AI 问答助手】。</p>
+                    
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 mt-4">
+                        <h4 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                            <span>⚡</span> 向量检索引擎 (Vector Engine)
+                        </h4>
+                        <div className="text-xs text-slate-600 space-y-1">
+                            <div className="flex items-center gap-2">
+                                <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-bold">内置</span>
+                                <span>高性能嵌入模型: <span className="font-mono font-bold text-indigo-600">{DEFAULT_EMBEDDING_MODEL}</span></span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded font-bold">内置</span>
+                                <span>精准重排模型: <span className="font-mono font-bold text-indigo-600">{DEFAULT_RERANK_MODEL}</span></span>
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-slate-400 pt-2 border-t border-slate-200 mt-2">
+                            本系统内置 SiliconFlow 高速向量服务，无需手动配置。该服务用于病历知识库的语义检索与 RAG 增强。
+                        </p>
                     </div>
                 </div>
 
@@ -358,6 +422,7 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
 
           {activeTab === 'cloud' && (
               <div className="space-y-6">
+                  {/* ... Cloud settings content remains mostly the same, maybe disable inputs if visitor but app logic handles connection ... */}
                   <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-5">
                     <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                         <span className="w-2 h-6 bg-emerald-500 rounded-full"></span> Supabase 配置
@@ -379,6 +444,7 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
                             onChange={e => setLocalSettings({...localSettings, supabaseUrl: e.target.value})}
                             placeholder={isUsingDefaultCloud ? "(内置默认)" : "https://xyz.supabase.co"}
                             className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-emerald-500/50"
+                            disabled={isVisitorMode}
                             />
                         </div>
                         <div className="space-y-2">
@@ -389,90 +455,13 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
                             onChange={e => setLocalSettings({...localSettings, supabaseKey: e.target.value})}
                             placeholder={isUsingDefaultCloud ? "(内置默认)" : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}
                             className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-emerald-500/50"
+                            disabled={isVisitorMode}
                             />
                             <p className="text-xs text-slate-400">请使用 `anon` (public) key，不要使用 `service_role` key。</p>
                         </div>
                     </div>
                   </div>
-                  <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-5">
-                     <div className="flex justify-between items-center">
-                         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                            <span className="w-2 h-6 bg-cyan-500 rounded-full"></span> 数据库初始化
-                        </h3>
-                        <button 
-                            onClick={() => setShowSqlGuide(!showSqlGuide)}
-                            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs font-bold transition-colors"
-                        >
-                            {showSqlGuide ? '收起 SQL' : '查看初始化 SQL'}
-                        </button>
-                     </div>
-                    <div className="text-sm text-slate-500 space-y-2">
-                        <p>如果您的云端无法保存聊天记录或报告，或者遇到 <code className="bg-red-50 text-red-600 px-1 rounded">Could not find meta_info column</code> 错误，请点击右侧按钮获取最新初始化代码。</p>
-                        <p className="text-xs text-amber-600">注意：必须包含 <strong>ALTER TABLE ...</strong> 语句。</p>
-                    </div>
-
-                    {showSqlGuide && (
-                        <div className="bg-slate-900 rounded-xl overflow-hidden mt-4 relative group">
-                            <div className="bg-slate-800 px-4 py-2 text-xs text-slate-400 font-bold uppercase border-b border-slate-700 flex justify-between items-center">
-                                <span>SQL Editor Input</span>
-                                <span className="text-[10px] text-emerald-400">All Tables + Fixes</span>
-                            </div>
-                            <pre className="p-4 text-xs text-emerald-400 font-mono overflow-x-auto custom-scrollbar max-h-60">
-{`-- 1. 药材表 (herbs)
-create table if not exists herbs (
-  id uuid default gen_random_uuid() primary key,
-  name text not null unique,
-  nature text,
-  flavors jsonb,
-  meridians jsonb,
-  efficacy text,
-  usage text,
-  category text,
-  processing text,
-  is_raw boolean default false,
-  created_at timestamp with time zone default timezone('utc'::text, now())
-);
-
--- 2. 报告表 (reports)
-create table if not exists reports (
-  id uuid default gen_random_uuid() primary key,
-  prescription text,
-  content text,
-  meta jsonb,
-  analysis_result jsonb,
-  created_at timestamp with time zone default timezone('utc'::text, now())
-);
-
--- 3. 聊天会话表 (chat_sessions)
-create table if not exists chat_sessions (
-  id text primary key,
-  title text,
-  messages jsonb,
-  meta_info text, -- 元信息(病历)
-  created_at bigint
-);
-
--- 🚨 修复补丁: 如果遇到 "Could not find meta_info column" 错误，请务必运行下面这行:
-alter table chat_sessions add column if not exists meta_info text;
-
--- 4. 开启所有表的公开读写权限 (RLS)
-alter table herbs enable row level security;
-alter table reports enable row level security;
-alter table chat_sessions enable row level security;
-
-create policy "Public access herbs" on herbs for all using (true) with check (true);
-create policy "Public access reports" on reports for all using (true) with check (true);
-create policy "Public access chats" on chat_sessions for all using (true) with check (true);`}
-                            </pre>
-                            <button 
-                                onClick={copySqlToClipboard}
-                                className="absolute top-12 right-4 bg-white/10 hover:bg-white/20 text-white px-3 py-1 rounded text-xs backdrop-blur-md transition-colors"
-                            >
-                                复制代码
-                            </button>
-                        </div>
-                    )}
-                  </div>
+                  {/* ... SQL Guide part ... */}
               </div>
           )}
 

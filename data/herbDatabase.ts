@@ -1,3 +1,4 @@
+
 import { HerbStaticData, Temperature, Flavor, QiDirection, BenCaoHerb, BurnerWeights, AISettings } from '../types';
 import { PROCESSING_DELTAS, BURNER_RULES, DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY } from '../constants';
 import { fetchCloudHerbs, insertCloudHerb } from '../services/supabaseService';
@@ -124,16 +125,23 @@ export const HERB_ALIASES: Record<string, string> = {
 // 2. Helper: Map Raw Strings to Enums
 // ==========================================
 const mapNatureToEnum = (nature: string): Temperature => {
-  if (nature.includes('大热')) return Temperature.GREAT_HEAT;
-  if (nature.includes('大寒')) return Temperature.GREAT_COLD;
+  if (!nature) return Temperature.NEUTRAL;
+  const n = nature.trim();
+
+  // Priority Check: More specific terms must come first
+  if (n.includes('大热')) return Temperature.GREAT_HEAT;
+  if (n.includes('大寒')) return Temperature.GREAT_COLD;
   
-  if (nature.includes('微温')) return Temperature.SLIGHTLY_WARM; 
-  if (nature.includes('微寒')) return Temperature.SLIGHTLY_COLD; 
+  if (n.includes('平偏温')) return Temperature.NEUTRAL_WARM; // 0.5 (Must verify before '温')
+  if (n.includes('平偏凉')) return Temperature.NEUTRAL_COOL; // -0.5 (Must verify before '凉')
+
+  if (n.includes('微温')) return Temperature.SLIGHTLY_WARM; 
+  if (n.includes('微寒')) return Temperature.SLIGHTLY_COLD; 
   
-  if (nature.includes('热')) return Temperature.HEAT;
-  if (nature.includes('凉')) return Temperature.COOL;
-  if (nature.includes('寒')) return Temperature.COLD;
-  if (nature.includes('温')) return Temperature.WARM;
+  if (n.includes('热')) return Temperature.HEAT;
+  if (n.includes('凉')) return Temperature.COOL;
+  if (n.includes('寒')) return Temperature.COLD;
+  if (n.includes('温')) return Temperature.WARM;
   
   return Temperature.NEUTRAL;
 };
@@ -168,8 +176,9 @@ const estimateAttributes = (channels: string[], flavors: Flavor[], nature: Tempe
   const twfc = { upper: u/total, middle: m/total, lower: l/total };
 
   let score = 0;
-  if ([Temperature.HEAT, Temperature.GREAT_HEAT, Temperature.WARM, Temperature.SLIGHTLY_WARM].includes(nature)) score += 1;
-  if ([Temperature.COLD, Temperature.GREAT_COLD, Temperature.COOL, Temperature.SLIGHTLY_COLD].includes(nature)) score -= 1;
+  // Score based on Enum (which maps to numeric HV correctly elsewhere)
+  if ([Temperature.HEAT, Temperature.GREAT_HEAT, Temperature.WARM, Temperature.SLIGHTLY_WARM, Temperature.NEUTRAL_WARM].includes(nature)) score += 1;
+  if ([Temperature.COLD, Temperature.GREAT_COLD, Temperature.COOL, Temperature.SLIGHTLY_COLD, Temperature.NEUTRAL_COOL].includes(nature)) score -= 1;
   
   if (flavors.includes(Flavor.PUNGENT)) score += 1;
   if (flavors.includes(Flavor.SWEET)) score += 0.5;
@@ -217,7 +226,7 @@ const createCatalogEntry = (herb: BenCaoHerb): HerbStaticData => {
 const LS_AI_SETTINGS_KEY = "logicmaster_ai_settings";
 
 // 注册新药材 (支持 云端自动同步)
-export const registerDynamicHerb = async (herb: BenCaoHerb, persistToCloud: boolean = true) => {
+export const registerDynamicHerb = async (herb: BenCaoHerb, persistToCloud: boolean = true, providedSettings?: AISettings) => {
     // 1. Update In-Memory List
     const existingIndex = FULL_HERB_LIST.findIndex(h => h.name === herb.name);
     if (existingIndex < 0) {
@@ -232,14 +241,17 @@ export const registerDynamicHerb = async (herb: BenCaoHerb, persistToCloud: bool
     // 3. Sync to Cloud (Primary Persistence)
     if (persistToCloud && herb.source !== 'cloud') {
         try {
-            const savedSettings = localStorage.getItem(LS_AI_SETTINGS_KEY);
-            let settings: AISettings = savedSettings ? JSON.parse(savedSettings) : {};
+            let settings = providedSettings;
+            if (!settings) {
+                const savedSettings = localStorage.getItem(LS_AI_SETTINGS_KEY);
+                settings = savedSettings ? JSON.parse(savedSettings) : {};
+            }
             
             // Fallback to built-in defaults if not configured
-            if (!settings.supabaseUrl) settings.supabaseUrl = DEFAULT_SUPABASE_URL;
-            if (!settings.supabaseKey) settings.supabaseKey = DEFAULT_SUPABASE_KEY;
+            if (settings && !settings.supabaseUrl) settings.supabaseUrl = DEFAULT_SUPABASE_URL;
+            if (settings && !settings.supabaseKey) settings.supabaseKey = DEFAULT_SUPABASE_KEY;
 
-            if (settings.supabaseUrl && settings.supabaseKey) {
+            if (settings?.supabaseUrl && settings?.supabaseKey) {
                 const success = await insertCloudHerb(herb, settings);
                 if (success) {
                     herb.source = 'cloud'; 
@@ -252,18 +264,22 @@ export const registerDynamicHerb = async (herb: BenCaoHerb, persistToCloud: bool
     }
 };
 
-// 加载药材 (Supabase Priority)
-export const loadCustomHerbs = async () => {
+// 加载药材 (Supabase Priority) - Now accepts injection of settings
+export const loadCustomHerbs = async (injectedSettings?: AISettings) => {
     console.log("[HerbDB] Loading herbs from Cloud...");
     try {
-        const savedSettings = localStorage.getItem(LS_AI_SETTINGS_KEY);
-        let settings: AISettings = savedSettings ? JSON.parse(savedSettings) : {};
+        let settings: AISettings = injectedSettings || {} as AISettings;
+        
+        if (!injectedSettings) {
+            const savedSettings = localStorage.getItem(LS_AI_SETTINGS_KEY);
+            settings = savedSettings ? JSON.parse(savedSettings) : {};
+        }
         
         if (!settings.supabaseUrl) settings.supabaseUrl = DEFAULT_SUPABASE_URL;
         if (!settings.supabaseKey) settings.supabaseKey = DEFAULT_SUPABASE_KEY;
 
         if (settings.supabaseUrl && settings.supabaseKey) {
-            const cloudHerbs = await fetchCloudHerbs(settings as AISettings);
+            const cloudHerbs = await fetchCloudHerbs(settings);
             if (cloudHerbs.length > 0) {
                 console.log(`[HerbDB] Loaded ${cloudHerbs.length} herbs from Cloud.`);
                 
@@ -271,6 +287,7 @@ export const loadCustomHerbs = async () => {
                 FULL_HERB_LIST = []; 
                 Object.keys(HERB_CATALOG).forEach(k => delete HERB_CATALOG[k]);
 
+                // Register but do NOT persist back to cloud (avoid loops)
                 cloudHerbs.forEach(h => registerDynamicHerb(h, false));
             } else {
                 console.warn("[HerbDB] No herbs found in Cloud. Database might be empty.");
@@ -315,11 +332,6 @@ export const getHerbInfo = (inputName: string): {
        return { coreName: aliasName, processing: '', data: HERB_CATALOG[aliasName], mappedFrom: inputName };
     }
   }
-
-  // 3. REMOVED: Strip Processing Suffix/Prefix
-  // 原因：用户要求严格匹配炮制品（如“炒白术”应视为独立药材，不应自动降级为“白术”）。
-  // 如果数据库中没有“炒白术”，应返回 data: null，触发 UI 的“AI补全”功能，
-  // 从而生成专门针对该炮制品的药性数据。
 
   return { coreName: inputName, processing: '', data: null, mappedFrom };
 };

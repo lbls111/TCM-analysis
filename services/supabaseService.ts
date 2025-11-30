@@ -1,4 +1,4 @@
-
+// ... (Imports and client setup remain same)
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { AISettings, BenCaoHerb, CloudReport, CloudChatSession } from '../types';
 
@@ -36,10 +36,7 @@ export const getSupabaseClient = (settings: AISettings): SupabaseClient | null =
   return supabase;
 };
 
-// ==========================================
-// Herbs (Pharmacopoeia)
-// ==========================================
-
+// ... (Herb functions remain same)
 export const fetchCloudHerbs = async (settings: AISettings): Promise<BenCaoHerb[]> => {
   const client = getSupabaseClient(settings);
   if (!client) return [];
@@ -324,7 +321,9 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
             title: session.title,
             messages: session.messages,
             meta_info: session.meta_info || null, // Ensure explicit null if undefined
-            created_at: session.created_at
+            medical_record: session.medical_record || null,
+            created_at: session.created_at,
+            updated_at: new Date().toISOString()
         };
 
         const { error } = await client
@@ -336,18 +335,28 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
                  console.warn("[Supabase] saveCloudChatSession: Network request failed.");
                  return false;
             }
-            // Enhanced Error Logging for Schema Mismatch
-            console.error("Error saving chat session:", error.message);
-            if (error.message.includes('meta_info')) {
-                console.error("CRITICAL SCHEMA ERROR: 'meta_info' column missing in 'chat_sessions' table. Please run the SQL update script.");
+            
+            // CRITICAL FIX: Detect specific schema error and throw precise error code for UI handling
+            const msg = error.message;
+            if (
+                msg.includes('medical_record') || 
+                msg.includes('updated_at') || 
+                msg.includes('Could not find the') || 
+                error.code === '42703'
+            ) {
+                console.error("CRITICAL SCHEMA ERROR: Columns missing in chat_sessions.");
+                throw new Error("SCHEMA_ERROR: Database columns missing (medical_record or updated_at)");
             }
-            throw new Error(error.message); // Throw to let caller log it
+            
+            console.error("Error saving chat session:", error.message);
+            throw new Error(error.message); 
         }
         return true;
     } catch (e: any) {
         handleNetworkError("saveCloudChatSession", e);
-        // Rethrow only if it's NOT a fetch error (to allow UI to show specific schema errors if needed)
-        // But preventing 'Failed to fetch' noise.
+        // Rethrow if it's our custom schema error
+        if (String(e).includes("SCHEMA_ERROR")) throw e;
+        
         if (!String(e).includes("Failed to fetch")) throw e;
         return false;
     }

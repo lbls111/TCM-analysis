@@ -1,5 +1,3 @@
-
-
 import { Flavor, Temperature, Constitution, QiDirection, AdministrationMode } from './types';
 
 // ==========================================
@@ -7,6 +5,23 @@ import { Flavor, Temperature, Constitution, QiDirection, AdministrationMode } fr
 // ==========================================
 export const DEFAULT_SUPABASE_URL = "https://igmxhardaohooxoscczk.supabase.co";
 export const DEFAULT_SUPABASE_KEY = "sb_publishable_OMG8HrPZ45Y6GyDpogXeQg_pT3P_K5g";
+
+// ==========================================
+// Vector Engine & Visitor API Configuration (SiliconFlow)
+// ==========================================
+export const VECTOR_API_URL = "https://api.siliconflow.cn/v1";
+export const VECTOR_API_KEY = "sk-xqnfqdvwujzarsqayfyoqojyewvcmixymkjrzqinrpuseuzn";
+
+export const DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3";
+export const DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
+
+// Visitor Default Chat Model (DeepSeek R1 via SiliconFlow)
+// Using exact ID requested by user
+export const VISITOR_DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B";
+
+// API Retry Settings
+export const DEFAULT_RETRY_DELAY = 2000; // 2 seconds
+export const MAX_RETRIES = 5; // Aggressive retry for 503s
 
 // ==========================================
 // 1. 药物寒热值 (HV_生品) 映射表
@@ -17,7 +32,9 @@ export const HV_MAP: Record<Temperature, number> = {
   [Temperature.HEAT]: 2.0,
   [Temperature.WARM]: 1.5,
   [Temperature.SLIGHTLY_WARM]: 1.0,
+  [Temperature.NEUTRAL_WARM]: 0.5, // 平偏温 - Explicitly defined
   [Temperature.NEUTRAL]: 0.0, // 平
+  [Temperature.NEUTRAL_COOL]: -0.5, // 平偏凉 - Explicitly defined
   [Temperature.SLIGHTLY_COLD]: -1.0,
   [Temperature.COOL]: -1.5,
   [Temperature.COLD]: -2.0,

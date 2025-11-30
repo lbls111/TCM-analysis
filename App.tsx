@@ -1,18 +1,25 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { analyzePrescriptionWithAI, generateHerbDataWithAI, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION, QUICK_ANALYZE_SYSTEM_INSTRUCTION } from './services/openaiService';
+import { analyzePrescriptionWithAI, generateHerbDataWithAI, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION, QUICK_ANALYZE_SYSTEM_INSTRUCTION, createEmptyMedicalRecord, fetchAvailableModels } from './services/openaiService';
 import { calculatePrescription, getPTILabel } from './utils/tcmMath';
 import { parsePrescription } from './utils/prescriptionParser';
-import { AnalysisResult, ViewMode, Constitution, AdministrationMode, BenCaoHerb, AISettings, CloudReport } from './types';
+import { AnalysisResult, ViewMode, Constitution, AdministrationMode, BenCaoHerb, AISettings, CloudReport, UserMode, MedicalRecord, CloudChatSession } from './types';
 import { QiFlowVisualizer } from './components/QiFlowVisualizer';
 import BenCaoDatabase from './components/BenCaoDatabase';
 import { HerbDetailModal } from './components/HerbDetailModal';
 import { EditHerbModal } from './components/EditHerbModal';
 import { AIChatbot } from './components/AIChatbot';
 import { AISettingsModal } from './components/AISettingsModal';
+import { ModeSelector } from './components/ModeSelector';
+import { PromptEditorModal } from './components/PromptEditorModal';
+import { MedicalRecordManager } from './components/MedicalRecordManager';
 import { FULL_HERB_LIST, registerDynamicHerb, loadCustomHerbs } from './data/herbDatabase';
-import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY } from './constants';
-import { saveCloudReport, fetchCloudReports, deleteCloudReport, updateCloudHerb } from './services/supabaseService';
+import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VECTOR_API_KEY, VECTOR_API_URL, VISITOR_DEFAULT_CHAT_MODEL } from './constants';
+import { saveCloudReport, fetchCloudReports, deleteCloudReport, updateCloudHerb, saveCloudChatSession } from './services/supabaseService';
+
+// Markdown Imports
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
 
 // Logging Imports
 import { LogProvider, useLog } from './contexts/LogContext';
@@ -23,7 +30,7 @@ const LS_REPORTS_KEY = "logicmaster_reports";
 const LS_REPORTS_META_KEY = "logicmaster_reports_meta";
 const LS_SETTINGS_KEY = "logicmaster_settings";
 const LS_AI_SETTINGS_KEY = "logicmaster_ai_settings";
-const LS_META_INFO_KEY = "logicmaster_meta_info"; 
+const LS_MEDICAL_RECORD_KEY = "logicmaster_medical_record";
 const DEFAULT_API_URL = "https://lbls888-lap.hf.space/v1";
 
 type ReportMode = 'quick' | 'deep';
@@ -35,8 +42,8 @@ interface ReportMeta {
 
 const sortVersions = (versions: string[]) => {
   return versions.sort((a, b) => {
-    const numA = parseInt(a.replace(/^V/, '')) || 0;
-    const numB = parseInt(b.replace(/^V/, '')) || 0;
+    const numA = parseInt(a.replace(/[^0-9]/g, '')) || 0;
+    const numB = parseInt(b.replace(/[^0-9]/g, '')) || 0;
     return numA - numB;
   });
 };
@@ -44,6 +51,7 @@ const sortVersions = (versions: string[]) => {
 const NAV_ITEMS = [
   { id: ViewMode.WORKSHOP, label: '计算工坊', icon: '🧮' },
   { id: ViewMode.VISUAL, label: '三焦动力', icon: '☯️' },
+  { id: ViewMode.MEDICAL_RECORD, label: '电子病历', icon: '📋' }, // New Module
   { id: ViewMode.REPORT, label: 'AI 推演', icon: '📝' },
   { id: ViewMode.AI_CHAT, label: 'AI 问答', icon: '🤖' },
   { id: ViewMode.DATABASE, label: '药典库', icon: '📚' }
@@ -53,10 +61,12 @@ const NAV_ITEMS = [
 function LogicMasterApp() {
   const { addLog } = useLog(); // Use the log hook
   const [showLogViewer, setShowLogViewer] = useState(false);
+  const [userMode, setUserMode] = useState<UserMode>(UserMode.SELECT);
 
   const [view, setView] = useState<ViewMode>(ViewMode.INPUT);
   const [input, setInput] = useState(PRESET_PRESCRIPTION);
-  const [metaInfo, setMetaInfo] = useState(''); 
+  const [medicalRecord, setMedicalRecord] = useState<MedicalRecord>(createEmptyMedicalRecord());
+
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [autoFillingHerb, setAutoFillingHerb] = useState<string | null>(null);
@@ -78,9 +88,11 @@ function LogicMasterApp() {
   const [aiSettings, setAiSettings] = useState<AISettings>({
     apiKey: '',
     apiBaseUrl: DEFAULT_API_URL,
-    model: '', 
+    model: 'gemini-2.5-pro', // Default as requested
     analysisModel: '', 
     chatModel: '', 
+    embeddingModel: DEFAULT_EMBEDDING_MODEL,
+    rerankModel: DEFAULT_RERANK_MODEL,
     availableModels: [],
     systemInstruction: DEFAULT_ANALYZE_SYSTEM_INSTRUCTION,
     temperature: 0,
@@ -93,6 +105,11 @@ function LogicMasterApp() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [showAISettingsModal, setShowAISettingsModal] = useState(false);
+  
+  // Prompt Editor State
+  const [showPromptEditor, setShowPromptEditor] = useState(false);
+  const [customReportPrompt, setCustomReportPrompt] = useState<string>(DEFAULT_ANALYZE_SYSTEM_INSTRUCTION);
+
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [initialDosageRef, setInitialDosageRef] = useState<number | null>(null);
   const [viewingHerb, setViewingHerb] = useState<BenCaoHerb | null>(null);
@@ -101,6 +118,60 @@ function LogicMasterApp() {
   
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const isVisitorMode = userMode === UserMode.VISITOR;
+  const isAdminMode = userMode === UserMode.ADMIN;
+
+  // --- State Reset Logic for Mode Switching ---
+  const resetApplicationState = () => {
+    addLog('warning', 'System', 'Mode changed. Resetting application state for data isolation.');
+    setView(ViewMode.INPUT);
+    setInput(PRESET_PRESCRIPTION);
+    setAnalysis(null);
+    setReports({});
+    setReportMeta({});
+    setActiveReportVersion('V1');
+    setCloudReports([]);
+    // Reset medical record to empty structure
+    setMedicalRecord(createEmptyMedicalRecord());
+  };
+
+  const handleModeSelect = async (mode: UserMode) => {
+    resetApplicationState();
+    setUserMode(mode);
+
+    if (mode === UserMode.ADMIN) {
+        // --- ADMIN AUTO-CONFIGURATION ---
+        const adminKey = "sk-x4Rt7xnpSrfn0PBV2M1aEAPeiF0F1aJlMGnj7XtbZzx0NbRi";
+        const newSettings = {
+            ...aiSettings,
+            apiKey: adminKey,
+        };
+        // Optimistically set key to state so it's ready immediately
+        setAiSettings(newSettings);
+        
+        // Trigger auto-fetch for models
+        try {
+            addLog('info', 'Admin', 'Auto-fetching models with default admin key...');
+            // Note: We use the local variable `newSettings` because setAiSettings state update is async
+            const models = await fetchAvailableModels(newSettings.apiBaseUrl, adminKey);
+            if (models.length > 0) {
+                 setAiSettings(prev => ({ 
+                     ...prev, 
+                     apiKey: adminKey, 
+                     availableModels: models, 
+                     // Keep user preferred model if it exists, else default to gemini-2.5-pro or first available
+                     model: prev.model || models[0]?.id 
+                 }));
+                 addLog('success', 'Admin', `Fetched ${models.length} models.`);
+            } else {
+                 addLog('warning', 'Admin', 'Auto-fetch returned 0 models. Check API key or endpoint.');
+            }
+        } catch(e: any) {
+            addLog('error', 'Admin', 'Failed to auto-fetch models', {error: e.message});
+        }
+    }
+  };
+  
   useEffect(() => {
     addLog('info', 'System', 'Application initialized');
     const savedReports = localStorage.getItem(LS_REPORTS_KEY);
@@ -130,9 +201,15 @@ function LogicMasterApp() {
       } catch (e) {}
     }
     
-    const savedMetaInfo = localStorage.getItem(LS_META_INFO_KEY);
-    if (savedMetaInfo) {
-        setMetaInfo(savedMetaInfo);
+    const savedRecord = localStorage.getItem(LS_MEDICAL_RECORD_KEY);
+    if (savedRecord) {
+        try {
+            const parsed = JSON.parse(savedRecord);
+            // Ensure compatibility by merging with empty record (in case fields missing)
+            setMedicalRecord({...createEmptyMedicalRecord(), ...parsed});
+        } catch(e) {
+            localStorage.removeItem(LS_MEDICAL_RECORD_KEY);
+        }
     }
     
     const savedAISettings = localStorage.getItem(LS_AI_SETTINGS_KEY);
@@ -142,9 +219,11 @@ function LogicMasterApp() {
         setAiSettings({
           apiKey: parsed.apiKey || '',
           apiBaseUrl: parsed.apiBaseUrl || DEFAULT_API_URL,
-          model: parsed.model || parsed.analysisModel || '',
+          model: parsed.model || 'gemini-2.5-pro',
           analysisModel: parsed.analysisModel || '',
           chatModel: parsed.chatModel || '',
+          embeddingModel: parsed.embeddingModel || DEFAULT_EMBEDDING_MODEL,
+          rerankModel: parsed.rerankModel || DEFAULT_RERANK_MODEL,
           availableModels: parsed.availableModels || [],
           systemInstruction: DEFAULT_ANALYZE_SYSTEM_INSTRUCTION, 
           temperature: parsed.temperature ?? 0,
@@ -175,19 +254,47 @@ function LogicMasterApp() {
     localStorage.setItem(LS_SETTINGS_KEY, JSON.stringify(fontSettings));
   }, [fontSettings]);
   
+  // Use a derived setting object for services to ensure data isolation
+  const activeAiSettings = useMemo(() => {
+    if (userMode === UserMode.VISITOR) {
+        // Visitor Logic: STRICT ENFORCEMENT of SiliconFlow for Visitor Mode
+        // User Requirement: Visitor Mode must use SiliconFlow API and Key, and the DeepSeek model.
+        // It must NOT use the private admin key.
+        return {
+            ...aiSettings,
+            apiKey: VECTOR_API_KEY, 
+            apiBaseUrl: VECTOR_API_URL,
+            model: VISITOR_DEFAULT_CHAT_MODEL,
+            supabaseUrl: DEFAULT_SUPABASE_URL,
+            supabaseKey: DEFAULT_SUPABASE_KEY,
+            // Override user selections to prevent using private models in visitor mode
+            availableModels: [{id: VISITOR_DEFAULT_CHAT_MODEL, name: 'DeepSeek-R1 (Visitor)'}]
+        };
+    }
+    
+    // Admin Logic: Return user settings directly
+    return aiSettings;
+  }, [aiSettings, userMode]);
+
+  // Ensure Herbs are reloaded when settings change (especially mode switch)
+  useEffect(() => {
+      // Pass the *active* settings to ensure visitor mode gets public data
+      loadCustomHerbs(activeAiSettings);
+  }, [activeAiSettings.supabaseUrl, activeAiSettings.supabaseKey]);
+
   useEffect(() => {
     localStorage.setItem(LS_AI_SETTINGS_KEY, JSON.stringify(aiSettings));
   }, [aiSettings]);
   
   useEffect(() => {
-      localStorage.setItem(LS_META_INFO_KEY, metaInfo);
-  }, [metaInfo]);
+      localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(medicalRecord));
+  }, [medicalRecord]);
   
   useEffect(() => {
     if (view === ViewMode.REPORT && reports[activeReportVersion]) {
         const currentReport = reports[activeReportVersion];
         // Use includes instead of endsWith for robustness against markdown/whitespace
-        const isComplete = currentReport.includes('</html>');
+        const isComplete = currentReport.includes('</html>') || currentReport.includes('<!-- DONE -->');
         setIsReportIncomplete(!isComplete);
     } else {
         setIsReportIncomplete(false);
@@ -197,17 +304,18 @@ function LogicMasterApp() {
   // Load Cloud Reports
   useEffect(() => {
       const loadHistory = async () => {
-          if (aiSettings.supabaseKey) {
+          if (activeAiSettings.supabaseKey) {
              addLog('info', 'Cloud', 'Fetching report history');
-             const history = await fetchCloudReports(aiSettings);
+             const history = await fetchCloudReports(activeAiSettings);
              setCloudReports(history);
           }
       };
-      if (view === ViewMode.REPORT) {
+      // Only load if not already loaded to prevent spamming
+      if (view === ViewMode.REPORT && userMode !== UserMode.SELECT && cloudReports.length === 0) {
           loadHistory();
       }
-  }, [view, aiSettings.supabaseKey]);
-
+  }, [view, activeAiSettings]);
+  
   // =========================================================
   // Herb Recognition Logic for Report (Memoized)
   // =========================================================
@@ -218,22 +326,21 @@ function LogicMasterApp() {
       return new RegExp(`(${escaped.join('|')})`, 'g');
   }, [FULL_HERB_LIST.length]);
 
-  const processReportContent = (html: string) => {
-      if (!herbRegex || !html) return html;
-      const parts = html.split(/(<[^>]+>)/g);
-      return parts.map(part => {
-          if (part.startsWith('<')) return part;
-          return part.replace(herbRegex, (match) => 
-              `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`
-          );
-      }).join('');
+  const processReportContent = (text: string) => {
+      if (!herbRegex || !text) return text;
+      // We process only text segments to inject HTML spans for herbs.
+      // Since we use rehype-raw, these spans will be rendered inside Markdown.
+      return text.replace(herbRegex, (match) => 
+          `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`
+      );
   };
 
   const handleReportClick = (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
-      const herbSpan = target.closest('[data-herb-name]');
-      if (herbSpan) {
-          const herbName = herbSpan.getAttribute('data-herb-name');
+      // Handle herb links using event delegation
+      if (target.matches('.herb-link') || target.closest('.herb-link')) {
+          const el = target.matches('.herb-link') ? target : target.closest('.herb-link');
+          const herbName = el?.getAttribute('data-herb-name');
           if (herbName) {
               handleHerbClick(herbName);
           }
@@ -269,21 +376,13 @@ function LogicMasterApp() {
       }
   };
 
-  const handleResetCurrentVersion = () => {
-      if (!activeReportVersion) return;
-      if (!window.confirm("确定要重置当前版本吗？\n当前内容将被清空，您可以重新选择【深度推演】或【快速审核】模式。")) return;
-      
-      addLog('info', 'Report', `Reset version ${activeReportVersion}`);
-      setReports(prev => ({
-          ...prev,
-          [activeReportVersion]: '' 
-      }));
-      setIsReportIncomplete(false);
-      setAiError(null);
-  };
-  
   const saveCurrentReportToCloud = async (version: string, htmlContent: string, mode: string, isManual: boolean = false) => {
-      if (!aiSettings.supabaseKey || !analysis) {
+      if (isVisitorMode) {
+          if (isManual) alert("访客模式限制：无法保存数据到公共云端。\n请在设置中配置您自己的 Supabase Key 以启用云端存储功能。");
+          return;
+      }
+      
+      if (!activeAiSettings.supabaseKey || !analysis) {
           if (isManual) alert("保存失败：未配置云数据库或缺少分析数据。");
           return;
       }
@@ -294,9 +393,9 @@ function LogicMasterApp() {
       const success = await saveCloudReport({
           prescription: input,
           content: htmlContent,
-          meta: { version, mode, model: aiSettings.model || aiSettings.analysisModel },
+          meta: { version, mode, model: activeAiSettings.model || activeAiSettings.analysisModel },
           analysis_result: { top3: analysis.top3, totalPTI: analysis.totalPTI }
-      }, aiSettings);
+      }, activeAiSettings);
       
       if (isManual) {
           setIsSavingCloud(false);
@@ -310,7 +409,7 @@ function LogicMasterApp() {
       }
       
       if (success) {
-          fetchCloudReports(aiSettings).then(setCloudReports);
+          fetchCloudReports(activeAiSettings).then(setCloudReports);
       }
   };
 
@@ -323,10 +422,14 @@ function LogicMasterApp() {
 
   const handleDeleteCloudReport = async (id: string, e: React.MouseEvent) => {
       e.stopPropagation();
+      if (isVisitorMode) {
+          alert("访客模式限制：无法删除云端数据。");
+          return;
+      }
       if (!window.confirm("确定要删除此云端存档吗？此操作无法撤销。")) return;
       
       addLog('action', 'Cloud', 'Deleting cloud report', { id });
-      const success = await deleteCloudReport(id, aiSettings);
+      const success = await deleteCloudReport(id, activeAiSettings);
       if (success) {
           addLog('success', 'Cloud', 'Cloud report deleted');
           setCloudReports(prev => prev.filter(r => r.id !== id));
@@ -336,16 +439,69 @@ function LogicMasterApp() {
       }
   };
 
+  // --- New Logic for Saving Medical Record ---
+  // Unified with Chat Session Logic but using a specific prefix for separation
+  const handleSaveMedicalRecordToCloud = async () => {
+      if (isVisitorMode) {
+          alert("访客模式限制：无法保存到云端。请切换至管理员模式或配置私有数据库。");
+          return;
+      }
+      if (!activeAiSettings.supabaseKey) {
+          alert("保存失败：未配置云数据库。");
+          return;
+      }
+      
+      // Use a distinct prefix for medical record archives to separate them from chat sessions
+      const recordId = `medical_record_master_${Date.now()}`;
+      
+      // Construct a meaningful title
+      let title = "电子病历存档";
+      if (medicalRecord.basicInfo.name) {
+          title += ` - ${medicalRecord.basicInfo.name}`;
+      }
+      const dateStr = new Date().toLocaleDateString();
+      title += ` (${dateStr})`;
+      if (medicalRecord.knowledgeChunks.length > 0) {
+          title += ` - ${medicalRecord.knowledgeChunks.length} 条知识`;
+      }
+      
+      addLog('info', 'Cloud', 'Saving Medical Record Archive...', { id: recordId, title });
+      
+      try {
+          const success = await saveCloudChatSession({
+              id: recordId,
+              title: title,
+              messages: [{
+                  role: 'system', 
+                  text: `[SYSTEM] 这是一个电子病历快照存档。包含 ${medicalRecord.knowledgeChunks.length} 条向量化知识片段。`
+              }],
+              medical_record: medicalRecord,
+              created_at: Date.now()
+          }, activeAiSettings);
+
+          if (success) {
+              addLog('success', 'Cloud', 'Medical record archive saved.');
+              alert("☁️ 病历数据已成功同步至云端！\n您可以在【历史档案】中查看、恢复或删除旧存档。");
+          } else {
+              throw new Error("Save returned false");
+          }
+      } catch (e: any) {
+          addLog('error', 'Cloud', 'Save failed', { error: e.message });
+          alert(`保存失败: ${e.message}`);
+          throw e; // Re-throw to let child component handle specific errors (e.g. SchemaError)
+      }
+  };
+
   const handleAskAI = async (mode: 'deep' | 'quick' | 'regenerate', regenerateInstructions?: string) => {
     if (!analysis) return;
 
-    if (!aiSettings.apiKey) {
+    if (!activeAiSettings.apiKey) {
       alert("请先点击右上角设置图标，配置 API Key 和 模型参数。");
       setShowAISettingsModal(true);
       return;
     }
 
-    setView(ViewMode.REPORT);
+    setView(ViewMode.REPORT); // Ensure view is visible
     setAiLoading(true);
     setAiError(null);
     addLog('info', 'AI', `Starting AI generation mode: ${mode}`);
@@ -355,20 +511,19 @@ function LogicMasterApp() {
 
     let versionToUse = activeReportVersion;
     let targetMode: ReportMode = 'deep';
-    let sysPrompt = DEFAULT_ANALYZE_SYSTEM_INSTRUCTION;
-
-    const isCurrentVersionEmpty = activeReportVersion && (!reports[activeReportVersion] || reports[activeReportVersion].trim() === '');
-
+    
+    // Determine the system prompt (User custom > Mode specific)
+    let sysPrompt = customReportPrompt; // Use custom if available/edited
+    
     if (mode === 'regenerate') {
         versionToUse = activeReportVersion;
         targetMode = reportMeta[versionToUse]?.mode || 'deep';
         
-        if (targetMode === 'quick') {
-            sysPrompt = QUICK_ANALYZE_SYSTEM_INSTRUCTION;
-        }
+        // Reset only content, keep metadata
         setReports(prev => ({ ...prev, [versionToUse]: '' }));
 
     } else {
+        const isCurrentVersionEmpty = activeReportVersion && (!reports[activeReportVersion] || reports[activeReportVersion].trim() === '');
         if (isCurrentVersionEmpty) {
             versionToUse = activeReportVersion;
         } else {
@@ -382,7 +537,8 @@ function LogicMasterApp() {
         }
         
         targetMode = mode;
-        if (targetMode === 'quick') {
+        // If it's Quick Mode, override the custom prompt with Quick Prompt UNLESS custom prompt was modified by user
+        if (targetMode === 'quick' && customReportPrompt === DEFAULT_ANALYZE_SYSTEM_INSTRUCTION) {
             sysPrompt = QUICK_ANALYZE_SYSTEM_INSTRUCTION;
         }
 
@@ -399,12 +555,12 @@ function LogicMasterApp() {
       const stream = analyzePrescriptionWithAI(
         analysis,
         input,
-        aiSettings,
+        activeAiSettings,
         regenerateInstructions,
         undefined,
         controller.signal,
         sysPrompt, 
-        metaInfo 
+        medicalRecord // Pass full record including chunks
       );
 
       let htmlContent = '';
@@ -413,12 +569,11 @@ function LogicMasterApp() {
         setReports(prev => ({ ...prev, [versionToUse]: htmlContent }));
       }
 
-      // Check inclusion for robustness
-      const isComplete = htmlContent.includes('</html>');
+      const isComplete = true; // Assume complete if stream finishes without error
       setIsReportIncomplete(!isComplete);
       addLog('success', 'AI', 'Generation completed', { incomplete: !isComplete });
       
-      if (isComplete) {
+      if (isComplete && !isVisitorMode) {
           saveCurrentReportToCloud(versionToUse, htmlContent, targetMode, false);
       }
 
@@ -446,8 +601,8 @@ function LogicMasterApp() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     
-    const currentMode = reportMeta[activeReportVersion]?.mode || 'deep';
-    const sysPrompt = currentMode === 'quick' ? QUICK_ANALYZE_SYSTEM_INSTRUCTION : DEFAULT_ANALYZE_SYSTEM_INSTRUCTION;
+    // Continue with same prompt
+    const sysPrompt = customReportPrompt;
 
     try {
       const partialReport = reports[activeReportVersion];
@@ -455,12 +610,12 @@ function LogicMasterApp() {
       const stream = analyzePrescriptionWithAI(
         analysis,
         input,
-        aiSettings,
+        activeAiSettings,
         undefined,
         partialReport,
         controller.signal,
         sysPrompt,
-        metaInfo
+        medicalRecord
       );
 
       let finalContent = partialReport;
@@ -469,12 +624,12 @@ function LogicMasterApp() {
         setReports(prev => ({ ...prev, [activeReportVersion]: finalContent }));
       }
       
-      const isNowComplete = finalContent.includes('</html>');
+      const isNowComplete = true; 
       setIsReportIncomplete(!isNowComplete);
       addLog('success', 'AI', 'Continuation successful');
 
-      if (isNowComplete) {
-        saveCurrentReportToCloud(activeReportVersion, finalContent, currentMode, false);
+      if (isNowComplete && !isVisitorMode) {
+        saveCurrentReportToCloud(activeReportVersion, finalContent, reportMeta[activeReportVersion]?.mode || 'deep', false);
       }
 
     } catch (err: any) {
@@ -489,7 +644,7 @@ function LogicMasterApp() {
   };
 
   const handleAutoFillHerb = async (herbName: string) => {
-     if (!aiSettings.apiKey) {
+     if (!activeAiSettings.apiKey) {
          alert("AI补全需要配置API Key。");
          setShowAISettingsModal(true);
          return;
@@ -498,9 +653,9 @@ function LogicMasterApp() {
      setAutoFillingHerb(herbName);
      addLog('info', 'HerbDB', `Auto-filling data for ${herbName}`);
      try {
-         const newHerbData = await generateHerbDataWithAI(herbName, aiSettings);
+         const newHerbData = await generateHerbDataWithAI(herbName, activeAiSettings);
          if (newHerbData) {
-             registerDynamicHerb(newHerbData, true);
+             registerDynamicHerb(newHerbData, true, activeAiSettings);
              addLog('success', 'HerbDB', `Generated data for ${herbName}`);
              alert(`✨ 成功！AI 已生成【${herbName}】的数据。\n性味：${newHerbData.nature} | ${newHerbData.flavors.join(',')}\n归经：${newHerbData.meridians.join(',')}`);
              handleStartCalculation();
@@ -528,6 +683,29 @@ function LogicMasterApp() {
       console.error(e);
       alert("AI提供的处方格式无法解析。请重试或手动修改。");
     }
+  };
+  
+  // Wrapper for updating global herb database from Chatbot
+  const handleUpdateHerbFromChat = (herb: Partial<BenCaoHerb>) => {
+      if (herb.name) {
+          addLog('action', 'Chat', `Updating herb: ${herb.name} from God Mode.`);
+          // Merge with existing if possible or create new structure
+          // This is a simplified merge, ideally should fetch existing first
+          const newHerb: BenCaoHerb = {
+              id: herb.id || `ai-update-${Date.now()}`,
+              name: herb.name,
+              nature: herb.nature || '平',
+              flavors: herb.flavors || [],
+              meridians: herb.meridians || [],
+              efficacy: herb.efficacy || '',
+              usage: herb.usage || '',
+              category: herb.category || '药材',
+              processing: herb.processing || '生用',
+              isRaw: false,
+              source: 'cloud'
+          };
+          registerDynamicHerb(newHerb, true, activeAiSettings); // Persist to cloud
+      }
   };
 
   const handleCopyHtml = () => {
@@ -604,10 +782,10 @@ function LogicMasterApp() {
   const handleSaveHerbChanges = async (updatedHerb: BenCaoHerb) => {
       setIsSavingHerb(true);
       try {
-        const success = await updateCloudHerb(updatedHerb.id, updatedHerb, aiSettings);
+        const success = await updateCloudHerb(updatedHerb.id, updatedHerb, activeAiSettings);
         if (success) {
             setEditingHerb(null);
-            await loadCustomHerbs(); // Refresh global list
+            await loadCustomHerbs(activeAiSettings); // Refresh global list with current settings
             alert("药材数据已更新！若该药材在当前处方中，请重新点击【开始演算】以应用新数据。");
         } else {
             alert("保存失败，请检查网络连接或 Supabase 权限。");
@@ -628,17 +806,14 @@ function LogicMasterApp() {
   };
 
   const renderCalculationTable = (targetAnalysis: AnalysisResult) => {
-    if (!targetAnalysis) return null;
-
-    return (
+      if (!targetAnalysis) return null;
+      return (
       <div className="overflow-hidden rounded-2xl border border-slate-200 shadow-xl bg-white/80 backdrop-blur-xl">
         <div className="p-6 bg-white/50 border-b border-slate-100">
            <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
               <span className="w-1.5 h-6 bg-indigo-600 rounded-full"></span> 处方物理明细
            </h3>
         </div>
-        
-        {/* Desktop Table */}
         <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50 text-slate-500 font-bold text-xs uppercase tracking-wider border-b border-slate-200">
@@ -687,6 +862,11 @@ function LogicMasterApp() {
                     <td className="px-6 py-4 text-center">
                       <span className={`px-3 py-1 rounded-full text-xs font-bold border ${getTempBadgeStyle(h.displayTemperature)}`}>
                         {h.displayTemperature} <span className="opacity-50 mx-1">|</span> {h.hvCorrected.toFixed(1)}
+                        {h.deltaHV !== 0 && (
+                          <span className={`font-mono text-[10px] ml-1 ${h.deltaHV > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
+                            ({h.deltaHV > 0 ? '+' : ''}{h.deltaHV.toFixed(1)})
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td className={`px-6 py-4 text-right font-mono font-bold ${h.ptiContribution > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
@@ -703,59 +883,10 @@ function LogicMasterApp() {
             </tbody>
           </table>
         </div>
-
-        {/* Mobile Card List View */}
-        <div className="md:hidden space-y-3 p-4 bg-slate-50/50">
-           {targetAnalysis.herbs.map((h) => {
-             const isLinked = !!h.staticData;
-             return (
-               <div key={h.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 relative overflow-hidden flex flex-col gap-2">
-                  <div className="flex justify-between items-start">
-                     <div className="flex items-center gap-2">
-                        <span className="text-lg font-bold text-slate-800 font-serif-sc" onClick={() => isLinked && handleHerbClick(h.name, h.mappedFrom)}>
-                          {h.name}
-                        </span>
-                        {!isLinked && (
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); handleAutoFillHerb(h.name); }}
-                              disabled={autoFillingHerb === h.name}
-                              className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded border border-indigo-100"
-                            >
-                              AI补全
-                            </button>
-                        )}
-                     </div>
-                     <span className="font-mono text-lg text-slate-600 font-bold">{h.dosageGrams}<small className="text-xs text-slate-400 ml-0.5">g</small></span>
-                  </div>
-                  
-                  <div className="flex gap-2 items-center">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${getTempBadgeStyle(h.displayTemperature)}`}>
-                        {h.displayTemperature} ({h.hvCorrected.toFixed(1)})
-                      </span>
-                      {h.staticData?.flavors.map(f => (
-                         <span key={f} className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded">{f}</span>
-                      ))}
-                  </div>
-
-                  <div className="flex justify-between items-end border-t border-slate-50 pt-2 mt-1">
-                     <div className="text-xs text-slate-400 flex gap-2">
-                        <span>{h.vector.x > 0 ? '散' : h.vector.x < 0 ? '收' : '•'}</span>
-                        <span>{h.vector.y > 0 ? '升' : h.vector.y < 0 ? '降' : '•'}</span>
-                     </div>
-                     <div className={`font-mono font-black text-lg ${h.ptiContribution > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
-                        {h.ptiContribution > 0 ? '+' : ''}{h.ptiContribution.toFixed(2)}
-                        <span className="text-[10px] text-slate-300 ml-1 font-normal uppercase">PTI</span>
-                     </div>
-                  </div>
-               </div>
-             );
-           })}
-        </div>
       </div>
     );
   };
 
-  // Fixed Bottom Navigation Component
   const MobileBottomNav = ({ currentView, setView }: { currentView: ViewMode, setView: (v: ViewMode) => void }) => (
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)] z-50 lg:hidden safe-area-pb">
         <div className="flex justify-around items-center h-16 px-1">
@@ -772,12 +903,24 @@ function LogicMasterApp() {
         </div>
       </div>
   );
+  
+  if (userMode === UserMode.SELECT) {
+    return <ModeSelector onSelect={handleModeSelect} />;
+  }
 
   return (
     <div 
       className={`min-h-screen w-full flex flex-col relative bg-[#f8fafc] text-slate-900 ${fontSettings.family} selection:bg-indigo-100 selection:text-indigo-900`}
       style={{ fontSize: `${fontSettings.scale}rem` }}
     >
+      <PromptEditorModal 
+          isOpen={showPromptEditor}
+          onClose={() => setShowPromptEditor(false)}
+          title="系统提示词配置 (System Prompt)"
+          defaultPrompt={customReportPrompt}
+          onSave={setCustomReportPrompt}
+      />
+      
       {viewingHerb && (
           <HerbDetailModal 
              herb={viewingHerb} 
@@ -786,7 +929,7 @@ function LogicMasterApp() {
                  setViewingHerb(null);
                  setEditingHerb(h);
              }}
-             onSwitch={handleHerbClick} // Pass the switcher
+             onSwitch={handleHerbClick}
           />
       )}
       
@@ -799,12 +942,12 @@ function LogicMasterApp() {
         />
       )}
       
-      {/* ... rest of App ... */}
       <AISettingsModal 
           isOpen={showAISettingsModal}
           onClose={() => setShowAISettingsModal(false)}
           settings={aiSettings}
           onSave={setAiSettings}
+          isVisitorMode={isVisitorMode}
       />
 
       <LogViewer 
@@ -812,7 +955,6 @@ function LogicMasterApp() {
           onClose={() => setShowLogViewer(false)} 
       />
       
-      {/* Cloud Report History Sidebar */}
       {showReportHistory && (
          <div className="fixed inset-0 z-[60] bg-slate-900/30 backdrop-blur-sm flex justify-end" onClick={() => setShowReportHistory(false)}>
              <div 
@@ -851,15 +993,12 @@ function LogicMasterApp() {
                                      <span>{r.analysis_result?.top3?.[0]?.name ? `核心: ${r.analysis_result.top3[0].name}` : ''}</span>
                                      <span className="ml-auto opacity-0 group-hover:opacity-100 text-indigo-600 font-bold transition-opacity">加载 →</span>
                                  </div>
-
-                                 {/* Delete Button */}
                                  <button 
                                     onClick={(e) => handleDeleteCloudReport(r.id, e)}
-                                    className="absolute top-2 right-2 w-6 h-6 rounded-full bg-white text-slate-300 hover:bg-red-50 hover:text-red-500 border border-transparent hover:border-red-100 flex items-center justify-center transition-colors shadow-sm"
-                                    title="删除此存档"
-                                 >
-                                    ✕
-                                 </button>
+                                    disabled={isVisitorMode}
+                                    className="absolute top-2 right-2 w-6 h-6 rounded-full bg-white text-slate-300 hover:bg-red-50 hover:text-red-500 border border-transparent hover:border-red-100 flex items-center justify-center transition-colors shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                                    title={isVisitorMode ? "访客模式无法删除" : "删除此存档"}
+                                 >✕</button>
                              </div>
                          ))
                      )}
@@ -878,6 +1017,15 @@ function LogicMasterApp() {
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-600 to-indigo-700 text-white flex items-center justify-center font-bold shadow-lg shadow-indigo-200">L</div>
                 <span className="font-bold text-lg font-serif-sc text-slate-800 tracking-tight hidden md:inline">LogicMaster</span>
              </div>
+             {isVisitorMode ? (
+                <span className="text-base font-bold bg-amber-100 text-amber-800 px-4 py-2 rounded-full border border-amber-200 shadow-sm">
+                    访客模式
+                </span>
+             ) : (
+                <span className="text-base font-bold bg-indigo-100 text-indigo-800 px-4 py-2 rounded-full border border-indigo-200 shadow-sm">
+                    管理员
+                </span>
+             )}
           </div>
           
           <nav className="hidden lg:flex bg-slate-100/50 p-1 rounded-full border border-slate-200/50">
@@ -897,81 +1045,42 @@ function LogicMasterApp() {
           </nav>
 
           <div className="flex items-center gap-2">
-             {/* Log Viewer Trigger */}
-             <button 
-                onClick={() => setShowLogViewer(true)}
-                className="p-2 rounded-lg transition-colors bg-white border border-slate-100 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 shadow-sm"
-                title="系统日志"
-             >
+             <button onClick={() => setShowLogViewer(true)} className="p-2 rounded-lg bg-white border border-slate-100 text-slate-400 hover:text-indigo-600">
                 <span className="text-sm">📟</span>
              </button>
-
-             <button 
-                onClick={() => setShowAISettingsModal(true)}
-                className="p-2 rounded-lg transition-colors bg-white border border-slate-100 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 shadow-sm"
-             >
+             <button onClick={() => setShowAISettingsModal(true)} className="p-2 rounded-lg bg-white border border-slate-100 text-slate-400 hover:text-indigo-600">
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M9.53 16.122a3 3 0 00-5.78 1.128 2.25 2.25 0 01-2.4 2.245 4.5 4.5 0 008.4-2.245c0-.399-.077-.78-.22-1.128zm0 0a15.998 15.998 0 003.388-1.62m-5.043-.025a15.994 15.994 0 011.622-3.395m3.42 3.42a15.995 15.995 0 004.764-4.648l3.876-5.814a1.151 1.151 0 00-1.597-1.597L14.146 6.32a15.996 15.996 0 00-4.649 4.763m3.42 3.42a6.776 6.776 0 00-3.42-3.42" /></svg>
              </button>
-
              <div className="relative">
-                <button 
-                  onClick={() => setShowSettings(!showSettings)}
-                  className={`p-2 rounded-lg transition-colors border shadow-sm ${showSettings ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-100 text-slate-400 hover:text-indigo-600'}`}
-                >
+                <button onClick={() => setShowSettings(!showSettings)} className={`p-2 rounded-lg transition-colors border shadow-sm ${showSettings ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-100 text-slate-400 hover:text-indigo-600'}`}>
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" /></svg>
                 </button>
-                
                 {showSettings && (
-                  <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)}></div>
-                  <div className="absolute right-0 top-full mt-3 w-72 bg-white p-5 rounded-2xl shadow-2xl border border-slate-100 z-50 animate-in fade-in slide-in-from-top-2">
+                  <div className="absolute right-0 top-full mt-3 w-72 bg-white p-5 rounded-2xl shadow-2xl border border-slate-100 z-50">
                      <div className="flex justify-between items-center mb-4">
                         <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">外观设置</span>
                         <button onClick={() => setFontSettings({family: 'font-serif-sc', scale: 1.0, theme: 'light'})} className="text-[10px] text-indigo-600 hover:underline">恢复默认</button>
                      </div>
-                     
                      <div className="space-y-5">
                        <div>
-                          <label className="text-sm font-bold text-slate-700 block mb-2">字体风格 (Typography)</label>
+                          <label className="text-sm font-bold text-slate-700 block mb-2">字体风格</label>
                           <div className="grid grid-cols-2 gap-2">
-                             <button 
-                                onClick={() => setFontSettings(s => ({...s, family: ''}))} 
-                                className={`text-xs py-2 px-3 rounded-lg border transition-all ${fontSettings.family === '' ? 'bg-slate-800 text-white border-slate-800 shadow-md' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
-                             >
-                               现代黑体 (Sans)
-                             </button>
-                             <button 
-                                onClick={() => setFontSettings(s => ({...s, family: 'font-serif-sc'}))} 
-                                className={`text-xs py-2 px-3 rounded-lg border transition-all font-serif-sc ${fontSettings.family === 'font-serif-sc' ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
-                             >
-                               典雅宋体 (Serif)
-                             </button>
+                             <button onClick={() => setFontSettings(s => ({...s, family: ''}))} className={`text-xs py-2 px-3 rounded-lg border ${fontSettings.family === '' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>现代黑体</button>
+                             <button onClick={() => setFontSettings(s => ({...s, family: 'font-serif-sc'}))} className={`text-xs py-2 px-3 rounded-lg border font-serif-sc ${fontSettings.family === 'font-serif-sc' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600'}`}>典雅宋体</button>
                           </div>
                        </div>
-                       
                        <div>
-                          <div className="flex justify-between items-center mb-2">
-                            <label className="text-sm font-bold text-slate-700">显示比例 (Scale)</label>
-                            <span className="text-xs font-mono text-slate-400">{Math.round(fontSettings.scale * 100)}%</span>
-                          </div>
-                          <div className="flex items-center gap-3">
-                             <button onClick={() => setFontSettings(s => ({...s, scale: Math.max(0.8, s.scale - 0.05)}))} className="w-8 h-8 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 flex items-center justify-center font-bold">-</button>
-                             <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                                <div className="h-full bg-indigo-500 rounded-full" style={{width: `${(fontSettings.scale - 0.5) * 100}%`}}></div>
-                             </div>
-                             <button onClick={() => setFontSettings(s => ({...s, scale: Math.min(1.4, s.scale + 0.05)}))} className="w-8 h-8 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 flex items-center justify-center font-bold">+</button>
-                          </div>
+                          <div className="flex justify-between items-center mb-2"><label className="text-sm font-bold text-slate-700">显示比例</label><span className="text-xs font-mono text-slate-400">{Math.round(fontSettings.scale * 100)}%</span></div>
+                          <div className="flex items-center gap-3"><button onClick={() => setFontSettings(s => ({...s, scale: Math.max(0.8, s.scale - 0.05)}))} className="w-8 h-8 rounded-full bg-slate-100 text-slate-600">-</button><div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 rounded-full" style={{width: `${(fontSettings.scale - 0.5) * 100}%`}}></div></div><button onClick={() => setFontSettings(s => ({...s, scale: Math.min(1.4, s.scale + 0.05)}))} className="w-8 h-8 rounded-full bg-slate-100 text-slate-600">+</button></div>
                        </div>
                      </div>
                   </div>
-                  </>
                 )}
              </div>
           </div>
         </header>
       )}
 
-      {/* Mobile Bottom Navigation */}
       <MobileBottomNav currentView={view} setView={setView} />
 
       <main className={`flex-1 w-full z-10 ${view !== ViewMode.INPUT ? 'pt-24 pb-24 lg:pb-8 px-4 lg:px-8' : 'flex items-center justify-center p-6 pb-24'}`}>
@@ -983,337 +1092,189 @@ function LogicMasterApp() {
                 <h1 className="text-3xl md:text-6xl font-black font-serif-sc text-slate-900 mb-4 tracking-tight">LogicMaster <span className="text-indigo-600">TCM</span></h1>
                 <p className="text-slate-500 text-base md:text-xl font-medium">通用中医计算引擎 · 经方/时方/三焦动力学仿真</p>
              </div>
-             
              <div className="bg-white p-3 rounded-[2rem] md:rounded-[2.5rem] shadow-2xl shadow-indigo-200/40 border border-slate-100 relative overflow-hidden group">
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                <textarea
-                   value={input}
-                   onChange={e => setInput(e.target.value)}
-                   className="w-full h-40 md:h-48 bg-slate-50 rounded-[1.5rem] md:rounded-[2rem] p-6 md:p-8 text-lg md:text-2xl text-slate-800 placeholder-slate-300 border-transparent focus:bg-white focus:ring-0 transition-all resize-none font-serif-sc outline-none"
-                   placeholder="在此输入处方..."
-                />
-                <div className="p-2 flex gap-3">
-                   <button onClick={handleStartCalculation} className="flex-1 bg-slate-900 text-white text-lg md:text-xl font-bold py-4 md:py-5 rounded-[1.5rem] md:rounded-[1.8rem] shadow-xl hover:bg-indigo-900 hover:shadow-2xl hover:-translate-y-0.5 transition-all flex items-center justify-center gap-3">
-                     <span>🚀</span> 开始演算
-                   </button>
-                </div>
+                <textarea value={input} onChange={e => setInput(e.target.value)} className="w-full h-40 md:h-48 bg-slate-50 rounded-[1.5rem] md:rounded-[2rem] p-6 md:p-8 text-lg md:text-2xl text-slate-800 placeholder-slate-300 border-transparent focus:bg-white focus:ring-0 transition-all resize-none font-serif-sc outline-none" placeholder="在此输入处方..." />
+                <div className="p-2 flex gap-3"><button onClick={handleStartCalculation} className="flex-1 bg-slate-900 text-white text-lg md:text-xl font-bold py-4 md:py-5 rounded-[1.5rem] md:rounded-[1.8rem] shadow-xl hover:bg-indigo-900 hover:shadow-2xl hover:-translate-y-0.5 transition-all flex items-center justify-center gap-3"><span>🚀</span> 开始演算</button></div>
              </div>
-             
-             <div className="mt-8 flex justify-center gap-6">
-                <button onClick={() => setShowAISettingsModal(true)} className="px-6 py-3 rounded-xl bg-white border border-slate-200 text-slate-500 font-bold hover:text-indigo-600 hover:border-indigo-200 transition-all shadow-sm text-sm flex items-center gap-2">
-                   <span>⚙️</span> 配置 API / 模型
-                </button>
-             </div>
+             <div className="mt-8 flex justify-center gap-6"><button onClick={() => setShowAISettingsModal(true)} className="px-6 py-3 rounded-xl bg-white border border-slate-200 text-slate-500 font-bold hover:text-indigo-600 hover:border-indigo-200 transition-all shadow-sm text-sm flex items-center gap-2"><span>⚙️</span> 配置 API / 模型</button></div>
           </div>
         )}
 
-        {/* ... (Existing workshop, visual, database views) ... */}
+        {/* ... (Middle Content remains the same) ... */}
         {view === ViewMode.WORKSHOP && analysis && (
           <div className="space-y-6 md:space-y-8 animate-in slide-in-from-bottom-4 fade-in max-w-[1600px] mx-auto">
              <div className="flex flex-col md:grid md:grid-cols-3 gap-4 md:gap-6">
-                
-                {/* Card 1: Total PTI */}
                 <div className="bg-white/80 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] shadow-xl shadow-slate-100/50 border border-white flex flex-col justify-between group hover:-translate-y-1 transition-transform duration-300 relative overflow-hidden min-h-[160px]">
                    <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl opacity-20 -translate-y-1/2 translate-x-1/2 ${getPTILabel(analysis.totalPTI).bg.replace('bg-', 'bg-')}`}></div>
                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                         <span className={`w-2 h-2 rounded-full ${getPTILabel(analysis.totalPTI).bg.replace('bg-', 'bg-').replace('50', '500')}`}></span>
-                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total PTI Index</span>
-                      </div>
-                      <div className={`text-5xl md:text-6xl font-black font-mono tracking-tighter ${getPTILabel(analysis.totalPTI).color}`}>
-                        {analysis.totalPTI > 0 ? '+' : ''}{analysis.totalPTI.toFixed(3)}
-                      </div>
+                      <div className="flex items-center gap-2 mb-2"><span className={`w-2 h-2 rounded-full ${getPTILabel(analysis.totalPTI).bg.replace('bg-', 'bg-').replace('50', '500')}`}></span><span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total PTI Index</span></div>
+                      <div className={`text-5xl md:text-6xl font-black font-mono tracking-tighter ${getPTILabel(analysis.totalPTI).color}`}>{analysis.totalPTI > 0 ? '+' : ''}{analysis.totalPTI.toFixed(3)}</div>
                    </div>
-                   <div className="mt-4">
-                     <span className={`px-4 py-2 rounded-xl text-sm font-bold border ${getPTILabel(analysis.totalPTI).bg} ${getPTILabel(analysis.totalPTI).color} ${getPTILabel(analysis.totalPTI).border}`}>
-                       {getPTILabel(analysis.totalPTI).label}
-                     </span>
-                   </div>
+                   <div className="mt-4"><span className={`px-4 py-2 rounded-xl text-sm font-bold border ${getPTILabel(analysis.totalPTI).bg} ${getPTILabel(analysis.totalPTI).color} ${getPTILabel(analysis.totalPTI).border}`}>{getPTILabel(analysis.totalPTI).label}</span></div>
                 </div>
-
-                {/* Card 2: Primary Driver */}
                 <div className="bg-white/80 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] shadow-xl shadow-slate-100/50 border border-white flex flex-col justify-between group hover:-translate-y-1 transition-transform duration-300 min-h-[160px]">
-                   <div>
-                      <div className="flex items-center gap-2 mb-2">
-                         <span className="w-2 h-2 rounded-full bg-slate-300"></span>
-                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Primary Driver</span>
-                      </div>
-                      <div className="text-3xl md:text-4xl font-bold text-slate-800 font-serif-sc mb-1 truncate">
-                        {analysis.top3[0]?.name || '-'}
-                      </div>
-                      <div className="text-sm text-slate-400">
-                         Contribution Factor
-                      </div>
-                   </div>
-                   <div className="self-end mt-2">
-                      <div className={`font-mono font-black text-3xl md:text-4xl ${analysis.top3[0]?.ptiContribution > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
-                        {analysis.top3[0]?.ptiContribution > 0 ? '+' : ''}{analysis.top3[0]?.ptiContribution.toFixed(2)}
-                      </div>
-                   </div>
+                   <div><div className="flex items-center gap-2 mb-2"><span className="w-2 h-2 rounded-full bg-slate-300"></span><span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Primary Driver</span></div><div className="text-3xl md:text-4xl font-bold text-slate-800 font-serif-sc mb-1 truncate">{analysis.top3[0]?.name || '-'}</div><div className="text-sm text-slate-400">Contribution Factor</div></div>
+                   <div className="self-end mt-2"><div className={`font-mono font-black text-3xl md:text-4xl ${analysis.top3[0]?.ptiContribution > 0 ? 'text-rose-500' : 'text-blue-500'}`}>{analysis.top3[0]?.ptiContribution > 0 ? '+' : ''}{analysis.top3[0]?.ptiContribution.toFixed(2)}</div></div>
                 </div>
-                
-                {/* Card 3: Dosage */}
                 <div className="bg-white/80 backdrop-blur-xl p-5 md:p-8 rounded-[2rem] shadow-xl shadow-slate-100/50 border border-white flex flex-col justify-between group hover:-translate-y-1 transition-transform duration-300 min-h-[160px]">
-                   <div>
-                      <div className="flex items-center gap-2 mb-2">
-                         <span className="w-2 h-2 rounded-full bg-slate-300"></span>
-                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Dosage</span>
-                      </div>
-                      <div className="text-4xl md:text-5xl font-black font-mono text-slate-800 tracking-tight">
-                        {analysis.herbs.reduce((sum, h) => sum + h.dosageGrams, 0).toFixed(1)}<span className="text-xl md:text-2xl ml-1 text-slate-400 font-bold">g</span>
-                      </div>
-                   </div>
-                   <div className="flex justify-between items-end border-t border-slate-100 pt-4 mt-4">
-                     <div className="text-xs text-slate-400 font-bold">参考基准</div>
-                     <div className="font-mono font-bold text-slate-500">{analysis.initialTotalDosage.toFixed(1)}g</div>
-                   </div>
+                   <div><div className="flex items-center gap-2 mb-2"><span className="w-2 h-2 rounded-full bg-slate-300"></span><span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Dosage</span></div><div className="text-4xl md:text-5xl font-black font-mono text-slate-800 tracking-tight">{analysis.herbs.reduce((sum, h) => sum + h.dosageGrams, 0).toFixed(1)}<span className="text-xl md:text-2xl ml-1 text-slate-400 font-bold">g</span></div></div>
+                   <div className="flex justify-between items-end border-t border-slate-100 pt-4 mt-4"><div className="text-xs text-slate-400 font-bold">参考基准</div><div className="font-mono font-bold text-slate-500">{analysis.initialTotalDosage.toFixed(1)}g</div></div>
                 </div>
              </div>
-
              {renderCalculationTable(analysis)}
           </div>
         )}
-
+        
         {view === ViewMode.VISUAL && analysis && (
           <div className="h-full animate-in fade-in duration-500 max-w-[1600px] mx-auto">
-             <QiFlowVisualizer 
-                data={analysis.sanJiao} 
-                herbs={analysis.herbs}
-                herbPairs={analysis.herbPairs}
-                netVector={analysis.netVector}
-                dynamics={analysis.dynamics}
+             <QiFlowVisualizer data={analysis.sanJiao} herbs={analysis.herbs} herbPairs={analysis.herbPairs} netVector={analysis.netVector} dynamics={analysis.dynamics} />
+          </div>
+        )}
+
+        {/* --- PERSISTENT BACKGROUND VIEWS --- */}
+        {/* We use hidden class instead of conditional rendering to keep component state alive (e.g. ongoing API calls) */}
+        
+        <div className={`h-full animate-in zoom-in-95 max-w-[1600px] mx-auto ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
+             <MedicalRecordManager 
+                record={medicalRecord} 
+                onUpdate={setMedicalRecord} 
+                onSaveToCloud={handleSaveMedicalRecordToCloud}
+                isAdminMode={isAdminMode}
+                settings={activeAiSettings} // Pass settings for fetching history
              />
-          </div>
-        )}
+        </div>
 
-        {view === ViewMode.DATABASE && (
-          <div className="h-full animate-in zoom-in-95 max-w-[1600px] mx-auto">
-             <BenCaoDatabase />
-          </div>
-        )}
+        <div className={`h-full animate-in zoom-in-95 max-w-[1600px] mx-auto ${view === ViewMode.DATABASE ? 'block' : 'hidden'}`}>
+             <BenCaoDatabase settings={activeAiSettings} />
+        </div>
 
-        {view === ViewMode.REPORT && (
-           <div className="max-w-[1600px] mx-auto animate-in zoom-in-95 flex flex-col gap-8">
-              {/* Report Header & Controls */}
-              {Object.keys(reports).length > 0 && (
-                  <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+        <div className={`max-w-[1800px] mx-auto w-full animate-in zoom-in-95 flex flex-col gap-6 h-full ${view === ViewMode.REPORT ? 'block' : 'hidden'}`}>
+              <div className="flex-1 flex flex-col gap-6 h-full min-w-0">
+                  {/* Persistent Report Toolbar */}
+                  <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex-shrink-0 sticky top-0 z-40">
                       <div className="flex items-center gap-3">
                           <span className="font-bold text-slate-800 text-lg">分析报告</span>
-                          {reportMeta[activeReportVersion] && (
-                            <span className={`px-2 py-0.5 text-xs font-bold rounded-full border flex items-center gap-1 ${
-                                reportMeta[activeReportVersion].mode === 'quick' 
-                                ? 'bg-amber-50 text-amber-700 border-amber-200' 
-                                : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                            }`}>
-                                {reportMeta[activeReportVersion].mode === 'quick' ? '⚡ 快速审核' : '🧠 深度推演'}
-                            </span>
+                          {Object.keys(reports).length > 0 && (
+                            <select 
+                                value={activeReportVersion} 
+                                onChange={(e) => setActiveReportVersion(e.target.value)}
+                                className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500"
+                            >
+                                {sortVersions(Object.keys(reports)).map(v => (
+                                    <option key={v} value={v}>{v} - {reportMeta[v]?.mode === 'quick' ? '快速' : '深度'}</option>
+                                ))}
+                            </select>
+                          )}
+                          
+                          {isAdminMode && (
+                            <button 
+                                onClick={() => setShowPromptEditor(true)}
+                                className="text-xs bg-slate-800 text-white px-2 py-1 rounded hover:bg-black transition-colors flex items-center gap-1"
+                            >
+                                <span>🔧</span> 提示词
+                            </button>
                           )}
                       </div>
 
                       <div className="flex gap-2 items-center flex-wrap justify-end w-full md:w-auto">
-                          {/* Version Tabs */}
-                          <div className="flex bg-slate-100 rounded-lg p-1 mr-0 md:mr-4 overflow-x-auto max-w-[200px] md:max-w-none no-scrollbar">
-                              {sortVersions(Object.keys(reports)).map(v => (
-                                  <div key={v} className="relative group shrink-0">
-                                    <button 
-                                        onClick={() => setActiveReportVersion(v)}
-                                        className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${activeReportVersion === v ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-                                    >
-                                        {v}
-                                    </button>
-                                    {/* Mini Delete Button for Version (Always Visible on mobile/active, visible on hover for others) */}
-                                    <button
-                                        onClick={(e) => handleDeleteReportVersion(v, e)}
-                                        className={`absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] items-center justify-center shadow-sm z-10 transition-opacity ${activeReportVersion === v ? 'flex' : 'hidden group-hover:flex'}`}
-                                        title="删除此版本"
-                                    >✕</button>
-                                  </div>
-                              ))}
-                              {/* Create New Version Button */}
-                              <button
-                                  onClick={() => handleAskAI(reportMeta[activeReportVersion]?.mode || 'deep')}
-                                  className="px-2 py-1 ml-1 rounded-md text-xs font-bold text-indigo-600 hover:bg-indigo-50 transition-all flex items-center gap-1 shrink-0"
-                                  title="生成新版本"
-                              >
-                                  + 新版
-                              </button>
-                          </div>
-
-                          {aiLoading ? (
-                                <button onClick={handleStopAI} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100 hover:bg-red-100 flex items-center gap-1 animate-pulse">
-                                    🛑 停止
-                                </button>
+                           {aiLoading ? (
+                                <button onClick={handleStopAI} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100 hover:bg-red-100 flex items-center gap-1 animate-pulse">🛑 停止</button>
                             ) : (
                                 <>
-                                    <button 
-                                        onClick={handleManualCloudSave} 
-                                        disabled={isSavingCloud}
-                                        className="text-xs font-bold text-emerald-600 bg-emerald-50 px-3 py-2 rounded-lg border border-emerald-100 hover:bg-emerald-100 flex items-center gap-1 transition-all"
-                                    >
-                                        {isSavingCloud ? <span className="animate-spin">⏳</span> : <span>☁️</span>}
-                                        {isSavingCloud ? '保存中...' : '保存到云端'}
-                                    </button>
-
-                                    <button 
-                                        onClick={handleResetCurrentVersion} 
-                                        className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-2 rounded-lg border border-indigo-100 hover:bg-indigo-100 flex items-center gap-1"
-                                    >
-                                        <span>↺</span> 重写当前版
-                                    </button>
-                                    <button 
-                                        onClick={() => setShowReportHistory(true)} 
-                                        className="text-xs font-bold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center gap-1"
-                                    >
-                                        <span>📂</span> 历史存档
-                                    </button>
-                                    <button 
-                                        onClick={handleCopyHtml} 
-                                        className="text-xs font-bold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50"
-                                    >
-                                        复制代码
-                                    </button>
-                                    <button 
-                                        onClick={() => handleDeleteReportVersion(activeReportVersion)}
-                                        className="text-xs font-bold text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100 hover:bg-red-100 flex items-center gap-1"
-                                    >
-                                        删除
-                                    </button>
+                                  <button onClick={() => handleAskAI('regenerate')} className="text-xs font-bold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center gap-1">
+                                      <span>🔄</span> 重写
+                                  </button>
+                                  <button onClick={handleCopyHtml} className="text-xs font-bold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center gap-1">
+                                      <span>📋</span> 复制代码
+                                  </button>
+                                  <button onClick={() => handleDeleteReportVersion(activeReportVersion)} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100 hover:bg-red-100 flex items-center gap-1">
+                                      <span>🗑️</span> 删除
+                                  </button>
                                 </>
                             )}
+                             <button onClick={handleManualCloudSave} disabled={isSavingCloud || isVisitorMode} className="text-xs font-bold px-3 py-2 rounded-lg border flex items-center gap-1 transition-all disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed">
+                                {isSavingCloud ? <span className="animate-spin">⏳</span> : <span>☁️</span>} {isSavingCloud ? '保存中...' : '保存到云'}
+                            </button>
+                            <button onClick={() => setShowReportHistory(true)} disabled={isVisitorMode} className="text-xs font-bold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center gap-1 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed">
+                                <span>📂</span> 历史存档
+                            </button>
                       </div>
                   </div>
-              )}
 
-              {/* Main Content Area */}
-              {aiLoading && (!reports[activeReportVersion] || reports[activeReportVersion] === '') ? (
-                <div className="text-center py-32 bg-white/80 backdrop-blur-xl rounded-[2.5rem] border border-white shadow-xl">
-                   <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mx-auto mb-6"></div>
-                   <h2 className="text-xl font-bold text-slate-800">AI 正在生成策略...</h2>
-                   <p className="text-slate-400 mt-2">正在进行数据推演，请耐心等待</p>
-                </div>
-              ) : aiError ? (
-                <div className="text-center py-32 bg-white rounded-3xl border border-red-100">
-                   <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center text-3xl mx-auto mb-6">⚠️</div>
-                   <h2 className="text-xl font-bold text-slate-800">生成报告时遇到错误</h2>
-                   <p className="text-red-500 mt-2 font-mono text-sm max-w-lg mx-auto bg-red-50 p-4 rounded-lg border border-red-100">{aiError}</p>
-                   <div className="flex justify-center gap-4 mt-8">
-                      <button 
-                          onClick={() => handleAskAI('deep')} 
-                          className="px-6 py-2 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-700 transition-colors font-bold"
-                      >
-                          重试
-                      </button>
-                      <button 
-                          onClick={() => setView(ViewMode.WORKSHOP)} 
-                          className="px-6 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors font-bold"
-                      >
-                          返回
-                      </button>
+                  {/* Main Content Area */}
+                  <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 bg-white rounded-[2rem] border border-slate-100 shadow-sm p-6 md:p-12">
+                      {aiLoading && (!reports[activeReportVersion] || reports[activeReportVersion] === '') ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center py-32">
+                           <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mx-auto mb-6"></div>
+                           <h2 className="text-xl font-bold text-slate-800">AI 正在生成策略...</h2>
+                           <p className="text-slate-400 mt-2">正在进行数据推演，请耐心等待 (后台运行中)</p>
+                        </div>
+                      ) : aiError ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center py-32">
+                           <div className="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center text-3xl mx-auto mb-6">⚠️</div>
+                           <h2 className="text-xl font-bold text-slate-800">生成报告时遇到错误</h2>
+                           <p className="text-red-500 mt-2 font-mono text-sm max-w-lg mx-auto bg-red-50 p-4 rounded-lg border border-red-100">{aiError}</p>
+                           <div className="flex justify-center gap-4 mt-8">
+                              <button onClick={() => handleAskAI('deep')} className="px-6 py-2 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-700 transition-colors font-bold">重试</button>
+                           </div>
+                        </div>
+                      ) : reports[activeReportVersion] ? (
+                         <div className="flex flex-col gap-6">
+                            {/* Updated Markdown Rendering */}
+                            <div className="prose prose-indigo prose-lg max-w-none prose-table:border-collapse prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-100" onClick={handleReportClick}>
+                              <ReactMarkdown 
+                                remarkPlugins={[remarkGfm]} 
+                                rehypePlugins={[rehypeRaw]}
+                                components={{
+                                  a: ({node, ...props}) => <a {...props} className="text-indigo-600 underline hover:text-indigo-800" />,
+                                  table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 shadow-sm"><table {...props} className="min-w-full" /></div>,
+                                  th: ({node, ...props}) => <th {...props} className="bg-slate-50 text-slate-700 font-bold px-4 py-3 text-left border-b border-slate-200" />,
+                                  td: ({node, ...props}) => <td {...props} className="px-4 py-3 border-b border-slate-100 text-slate-600" />,
+                                  blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-500 pl-4 italic text-slate-600 bg-slate-50 py-2 rounded-r-lg my-4" />,
+                                  ul: ({node, ...props}) => <ul {...props} className="list-disc list-outside ml-6 space-y-1 my-4" />,
+                                  ol: ({node, ...props}) => <ol {...props} className="list-decimal list-outside ml-6 space-y-1 my-4" />,
+                                  h1: ({node, ...props}) => <h1 {...props} className="text-3xl font-bold text-slate-900 mt-8 mb-4 border-b border-slate-100 pb-2" />,
+                                  h2: ({node, ...props}) => <h2 {...props} className="text-2xl font-bold text-slate-800 mt-6 mb-3 flex items-center gap-2 after:content-[''] after:h-px after:flex-1 after:bg-slate-100 after:ml-4" />,
+                                  h3: ({node, ...props}) => <h3 {...props} className="text-xl font-bold text-indigo-700 mt-4 mb-2" />,
+                                  strong: ({node, ...props}) => <strong {...props} className="font-bold text-slate-900 bg-slate-100 px-1 rounded" />,
+                                }}
+                              >
+                                {processReportContent(reports[activeReportVersion])}
+                              </ReactMarkdown>
+                            </div>
+
+                            {isReportIncomplete && (
+                                <div className="mt-4 text-center animate-in fade-in">
+                                    <button onClick={handleContinueAI} disabled={aiLoading} className="text-base font-bold text-white bg-amber-500 px-8 py-4 rounded-xl border border-amber-600 hover:bg-amber-600 flex items-center justify-center gap-2 shadow-lg mx-auto disabled:bg-amber-400">
+                                       {aiLoading ? <span>正在续写...</span> : <span>继续生成报告</span>}
+                                    </button>
+                                </div>
+                            )}
+                         </div>
+                      ) : (
+                         <div className="h-full flex flex-col items-center justify-center text-center py-24 text-slate-400">
+                            {analysis ? (
+                                <div className="max-w-md mx-auto">
+                                    <h3 className="text-2xl font-black text-slate-800 font-serif-sc mb-4">选择报告类型</h3>
+                                    <div className="flex flex-col gap-4">
+                                        <button onClick={() => handleAskAI('deep')} className="w-full p-4 bg-indigo-600 text-white rounded-2xl shadow-lg hover:bg-indigo-700 hover:-translate-y-0.5 transition-all flex items-center justify-between group">
+                                            <div className="flex items-center gap-4"><span className="text-2xl">🧠</span><div className="text-left"><div className="font-bold">生成深度推演报告</div></div></div><span className="opacity-0 group-hover:opacity-100 transition-opacity">→</span>
+                                        </button>
+                                        <button onClick={() => handleAskAI('quick')} className="w-full p-4 bg-white border-2 border-slate-100 text-slate-700 rounded-2xl hover:border-amber-200 hover:text-amber-800 hover:bg-amber-50 transition-all flex items-center justify-between group">
+                                            <div className="flex items-center gap-4"><span className="text-2xl">⚡</span><div className="text-left"><div className="font-bold">生成快速审核报告</div></div></div><span className="opacity-0 group-hover:opacity-100 transition-opacity">→</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <p>暂无报告。请点击“开始演算”后生成。</p>
+                            )}
+                         </div>
+                      )}
                    </div>
-                </div>
-              ) : reports[activeReportVersion] ? (
-                 <div className="flex flex-col gap-6">
-                    <div 
-                      className="prose prose-slate max-w-none bg-white p-6 md:p-12 rounded-[2rem] md:rounded-[2.5rem] shadow-xl border border-slate-100"
-                      dangerouslySetInnerHTML={{ __html: processReportContent(reports[activeReportVersion]) }}
-                      onClick={handleReportClick}
-                    />
-
-                    {isReportIncomplete && (
-                        <div className="mt-4 text-center animate-in fade-in">
-                            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl max-w-md mx-auto text-sm text-amber-800 font-medium">
-                                报告似乎未生成完整，您可以点击下方按钮继续。
-                            </div>
-                            <button 
-                                onClick={handleContinueAI}
-                                disabled={aiLoading}
-                                className="mt-6 text-base font-bold text-white bg-amber-500 px-8 py-4 rounded-xl border border-amber-600 hover:bg-amber-600 flex items-center justify-center gap-2 shadow-lg hover:-translate-y-0.5 transition-all mx-auto disabled:bg-amber-400 disabled:cursor-not-allowed"
-                            >
-                               {aiLoading ? (
-                                <>
-                                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                                 <span>正在续写...</span>
-                               </>
-                               ) : (
-                                <>
-                                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12h15m0 0l-6.75-6.75M19.5 12l-6.75 6.75" /></svg>
-                                 <span>继续生成报告</span>
-                                </>
-                               )}
-                            </button>
-                        </div>
-                    )}
-                 </div>
-              ) : (
-                 <div className="text-center py-24 bg-white/80 backdrop-blur-xl rounded-[2.5rem] border border-white shadow-xl text-slate-400">
-                    {analysis ? (
-                        <div className="max-w-md mx-auto">
-                            <h3 className="text-2xl font-black text-slate-800 font-serif-sc mb-4">选择报告类型</h3>
-                            <p className="mb-8 text-slate-500">已完成处方计算，请选择一种模式生成 AI 深度分析。</p>
-                            
-                            <div className="flex flex-col gap-4">
-                                <button 
-                                    onClick={() => handleAskAI('deep')} 
-                                    className="w-full p-4 bg-indigo-600 text-white rounded-2xl shadow-lg hover:bg-indigo-700 hover:-translate-y-0.5 transition-all flex items-center justify-between group"
-                                >
-                                    <div className="flex items-center gap-4">
-                                        <span className="text-2xl">🧠</span>
-                                        <div className="text-left">
-                                            <div className="font-bold">生成深度推演报告</div>
-                                            <div className="text-xs text-indigo-200 font-normal opacity-80">完整 6 步推演 / 局势博弈论 / 耗时较长</div>
-                                        </div>
-                                    </div>
-                                    <span className="opacity-0 group-hover:opacity-100 transition-opacity">→</span>
-                                </button>
-
-                                <button 
-                                    onClick={() => handleAskAI('quick')} 
-                                    className="w-full p-4 bg-white border-2 border-slate-100 text-slate-700 rounded-2xl hover:border-amber-200 hover:text-amber-800 hover:bg-amber-50 transition-all flex items-center justify-between group"
-                                >
-                                    <div className="flex items-center gap-4">
-                                        <span className="text-2xl">⚡</span>
-                                        <div className="text-left">
-                                            <div className="font-bold">生成快速审核报告</div>
-                                            <div className="text-xs text-slate-400 font-normal group-hover:text-amber-700/70">找漏洞 / 提建议 / 拓思路 / 临床辅助</div>
-                                        </div>
-                                    </div>
-                                    <span className="opacity-0 group-hover:opacity-100 transition-opacity">→</span>
-                                </button>
-                            </div>
-                            
-                            <div className="flex justify-center mt-8">
-                                <button 
-                                    onClick={() => setShowReportHistory(true)} 
-                                    className="text-xs font-bold text-slate-600 bg-white px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 flex items-center gap-2"
-                                >
-                                    <span>☁️</span> 查看云端历史报告
-                                </button>
-                            </div>
-
-                            <button 
-                                onClick={() => setView(ViewMode.INPUT)} 
-                                className="mt-8 text-sm text-slate-400 hover:text-slate-600 underline block mx-auto"
-                            >
-                                放弃当前结果，开始新演算
-                            </button>
-                        </div>
-                    ) : (
-                        <>
-                            <p>暂无报告。请点击“开始演算”后生成。</p>
-                            <button 
-                                onClick={() => setView(ViewMode.INPUT)} 
-                                className="mt-6 px-6 py-3 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-700 transition-colors font-bold"
-                            >
-                                开始新的演算
-                            </button>
-                        </>
-                    )}
-                 </div>
-              )}
+              </div>
            </div>
-        )}
 
-        <div className={`h-[calc(100vh-8rem)] max-w-[1600px] mx-auto animate-in zoom-in-95 flex flex-col ${view === ViewMode.AI_CHAT && analysis ? '' : 'hidden'}`}>
+        <div className={`h-[calc(100vh-8rem)] max-w-[1600px] mx-auto animate-in zoom-in-95 flex flex-col ${view === ViewMode.AI_CHAT && analysis ? 'block' : 'hidden'}`}>
              {analysis && (
                  <AIChatbot 
                     analysis={analysis} 
@@ -1322,9 +1283,12 @@ function LogicMasterApp() {
                     onUpdatePrescription={handleUpdatePrescriptionFromChat}
                     onRegenerateReport={(instr) => handleAskAI('regenerate', instr)}
                     onHerbClick={handleHerbClick}
-                    settings={aiSettings}
-                    metaInfo={metaInfo}
-                    onUpdateMetaInfo={setMetaInfo}
+                    settings={activeAiSettings}
+                    medicalRecord={medicalRecord}
+                    onUpdateMedicalRecord={setMedicalRecord}
+                    onUpdateHerb={handleUpdateHerbFromChat} // Pass the new handler
+                    isVisitorMode={isVisitorMode}
+                    isAdminMode={isAdminMode}
                  />
              )}
         </div>
@@ -1341,7 +1305,6 @@ function LogicMasterApp() {
   );
 }
 
-// Wrap App with Providers
 export default function App() {
   return (
     <LogProvider>

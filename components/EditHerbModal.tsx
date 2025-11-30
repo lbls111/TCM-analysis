@@ -94,7 +94,7 @@ export const EditHerbModal: React.FC<Props> = ({ herb, onClose, onSave, isSaving
                         className="px-3 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 text-xs font-bold whitespace-nowrap transition-colors flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                         title="使用 AI 根据药名自动填充所有字段"
                      >
-                        {isAiLoading ? <span className="animate-spin">⏳</span> : '✨'} AI补全
+                        {isAiLoading ? <span className="animate-spin">⏳</span> : '✨'} AI 整理/校准
                      </button>
                  </div>
               </div>

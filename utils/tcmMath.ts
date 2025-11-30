@@ -11,8 +11,9 @@ const getTemperatureLabelFromValue = (hv: number): string => {
   if (hv >= 1.8) return '热';
   if (hv >= 1.3) return '温';
   if (hv >= 0.8) return '微温';
-  if (hv >= 0.3) return '平偏温';
-  if (hv > -0.3) return '平';
+  if (hv >= 0.3) return '平偏温'; // Covers 0.5
+  if (hv > -0.3) return '平';     // Covers 0
+  if (hv > -0.8) return '平偏凉'; // Covers -0.5
   if (hv > -1.3) return '微寒';
   if (hv > -1.8) return '凉';
   if (hv > -2.3) return '寒';
@@ -211,8 +212,25 @@ export const calculatePrescription = (
     const temp = staticData?.temperature || Temperature.NEUTRAL;
     const hvBase = HV_MAP[temp] || 0;
     
-    const deltaHV = h.processingMethod ? (PROCESSING_DELTAS[h.processingMethod] || 0) : 0;
+    let deltaHV = h.processingMethod ? (PROCESSING_DELTAS[h.processingMethod] || 0) : 0;
+    
+    // NEW: Nuanced Processing Logic based on base temperature
+    if (deltaHV > 0) { // For warming processing methods
+      if (hvBase < -1.0) deltaHV *= 0.6; // Reduce effect on very cold herbs
+      else if (hvBase < 0) deltaHV *= 0.8; // Slightly reduce effect on cool herbs
+    } else if (deltaHV < 0) { // For cooling processing methods
+      if (hvBase > 1.0) deltaHV *= 0.6; // Reduce effect on very warm herbs
+      else if (hvBase > 0) deltaHV *= 0.8; // Slightly reduce effect on warm herbs
+    }
+
     let hvCorrected = hvBase + deltaHV;
+
+    // NEW: Cap to prevent over-correction
+    // Strict logic: If base is Neutral-Warm (0.5), we shouldn't bump it to 1.5 just because of processing unless intent is strong.
+    // If hvBase is already adjusted by the database (e.g. "Zhi Gan Cao" in DB has "Neutral-Warm"), then deltaHV should be 0 if parsing was exact.
+    
+    if (hvBase < 0 && hvCorrected > 0.5) hvCorrected = 0.5; // A cold herb shouldn't become more than slightly warm
+    if (hvBase > 0 && hvCorrected < -0.5) hvCorrected = -0.5; // A warm herb shouldn't become more than slightly cool
 
     // Apply Constitution Modifier
     if (hvCorrected > 0) hvCorrected *= constMods.heatMult;
@@ -313,8 +331,8 @@ export const calculatePrescription = (
 // 修复后的标签显示逻辑
 // 严格对应 HV_MAP 的定义，避免区间重叠导致的显示错误
 // ==========================================
-// Great Heat (2.5), Heat (2.0), Warm (1.5), Slight Warm (1.0), Neutral (0), 
-// Slight Cold (-1.0), Cool (-1.5), Cold (-2.0), Great Cold (-2.5).
+// Great Heat (2.5), Heat (2.0), Warm (1.5), Slight Warm (1.0), Neutral-Warm (0.5), Neutral (0), 
+// Neutral-Cool (-0.5), Slight Cold (-1.0), Cool (-1.5), Cold (-2.0), Great Cold (-2.5).
 export const getPTILabel = (pti: number) => {
   if (pti >= 2.2) return { label: '大热', color: 'text-red-700', bg: 'bg-red-100', border: 'border-red-600' };
   if (pti >= 1.8) return { label: '热', color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-500' };

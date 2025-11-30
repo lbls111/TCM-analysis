@@ -1,5 +1,4 @@
 
-
 import { BenCaoHerb } from '../types';
 
 // 数据来源：2025年版《中华人民共和国药典》（一部）
@@ -11,6 +10,6 @@ export const RAW_PHARMACOPOEIA_DATA: string[] = [
 ];
 
 export const BEN_CAO_CATEGORIES = ['全部', '药材', '炮制品'];
-export const BEN_CAO_NATURES = ['寒', '凉', '平', '温', '热'];
+export const BEN_CAO_NATURES = ['大寒', '寒', '凉', '微寒', '平偏凉', '平', '平偏温', '微温', '温', '热', '大热'];
 export const BEN_CAO_FLAVORS = ['酸', '苦', '甘', '辛', '咸', '淡', '涩'];
 export const BEN_CAO_PROCESSING = ['全部', '生用', '蜜炙', '酒炙', '醋炙', '盐炙', '炒', '炒炭', '煨', '蒸', '煮', '烫', '煅', '制霜', '发酵', '制'];

@@ -1,4 +1,5 @@
 
+
 export enum Flavor {
   PUNGENT = '辛',
   BITTER = '苦',
@@ -14,7 +15,9 @@ export enum Temperature {
   HEAT = '热',
   WARM = '温',
   SLIGHTLY_WARM = '微温',
+  NEUTRAL_WARM = '平偏温', // Added for precision (0.5)
   NEUTRAL = '平',
+  NEUTRAL_COOL = '平偏凉', // Added for precision (-0.5)
   SLIGHTLY_COLD = '微寒',
   COOL = '凉',
   COLD = '寒',
@@ -31,9 +34,16 @@ export enum ViewMode {
   INPUT = 'INPUT',
   WORKSHOP = 'WORKSHOP',
   VISUAL = 'VISUAL',
+  MEDICAL_RECORD = 'MEDICAL_RECORD', // New Module
   REPORT = 'REPORT',
   AI_CHAT = 'AI_CHAT',
   DATABASE = 'DATABASE'
+}
+
+export enum UserMode {
+  SELECT = 'SELECT',
+  VISITOR = 'VISITOR',
+  ADMIN = 'ADMIN'
 }
 
 export enum Constitution {
@@ -190,7 +200,8 @@ export interface CloudChatSession {
   id: string;
   title: string;
   messages: any[]; // JSONB
-  meta_info?: string; // New: Patient/Context Info stored with session
+  meta_info?: string; // Legacy: Raw text medical info
+  medical_record?: MedicalRecord; // New: Structured medical record
   created_at: number; // Timestamp
   updated_at?: string; // ISO String from DB
 }
@@ -208,6 +219,8 @@ export interface AISettings {
   model: string;            // 主模型 (Unified Model)
   analysisModel?: string;   // Deprecated: Kept for compatibility
   chatModel?: string;       // Deprecated: Kept for compatibility
+  embeddingModel?: string;  // NEW: Embedding Model ID
+  rerankModel?: string;     // NEW: Rerank Model ID (Optional)
   
   availableModels: ModelOption[]; // 从API获取的模型列表
 
@@ -242,4 +255,74 @@ export interface LogEntry {
   module: string; // e.g. "Chat", "System", "Supabase"
   message: string;
   details?: any; // JSON object for detailed payload
+}
+
+// === Knowledge Base Interfaces (RAG) ===
+export interface MedicalKnowledgeChunk {
+  id: string;
+  content: string;
+  sourceType: 'manual' | 'import' | 'chat'; // Where this chunk came from
+  tags: string[]; // e.g. '主诉', '检验', '病史'
+  embedding?: number[]; // Vector array
+  createdAt: number;
+}
+
+// === Structured Medical Record Interface (Updated) ===
+export interface BloodPressureReading {
+  id: string;
+  date: string;
+  reading: string; // e.g., "120/80"
+  heartRate: string; // e.g., "75"
+  context?: string; // NEW: To store "早上 左手" etc.
+}
+
+export interface LabResult {
+  id: string;
+  item: string;
+  result: string;
+  date: string;
+}
+
+export interface TreatmentPlanEntry {
+    id: string;
+    date: string;
+    plan: string;
+}
+
+export interface MedicalRecord {
+  // Knowledge Base (Core for RAG)
+  knowledgeChunks: MedicalKnowledgeChunk[];
+  
+  // Structured Fields (Legacy / Hybrid)
+  basicInfo: { name: string; gender: string; age: string; marital: string; occupation: string; season: string; };
+  chiefComplaint: string;
+  historyOfPresentIllness: string;
+  pastHistory: string;
+  allergies: string;
+  currentSymptoms: {
+    coldHeat: string;
+    sweat: string;
+    headBody: string;
+    stoolsUrine: string;
+    diet: string;
+    sleep: string;
+    emotion: string;
+    gynecology: string;
+    patientFeedback: string;
+  };
+  physicalExam: {
+    tongue: string;
+    pulse: string;
+    general: string;
+    bloodPressureReadings: BloodPressureReading[];
+  };
+  auxExams: {
+    labResults: LabResult[];
+    other: string;
+  };
+  diagnosis: {
+    tcm: string;
+    western: string;
+    treatmentPlans: TreatmentPlanEntry[];
+  };
 }

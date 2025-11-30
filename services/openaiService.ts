@@ -1,22 +1,13 @@
-import { AnalysisResult, AISettings, ModelOption, BenCaoHerb } from "../types";
+import { AnalysisResult, AISettings, ModelOption, BenCaoHerb, MedicalRecord, TreatmentPlanEntry, MedicalKnowledgeChunk } from "../types";
+import { DEFAULT_RETRY_DELAY, MAX_RETRIES, VECTOR_API_URL, VECTOR_API_KEY, DEFAULT_EMBEDDING_MODEL } from "../constants";
 
-// ==========================================
-// 1. Types & Interfaces for OpenAI API
-// ==========================================
-
+// ... (Interfaces remain same)
 export interface OpenAIToolCall {
     id: string;
     type: 'function';
-    function: {
-        name: string;
-        arguments: string; // JSON string
-    };
+    function: { name: string; arguments: string; };
 }
-
-export type OpenAIContentPart = 
-  | { type: 'text'; text: string }
-  | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } };
-
+export type OpenAIContentPart = | { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } };
 export interface OpenAIMessage {
     role: 'system' | 'user' | 'assistant' | 'tool';
     content?: string | null | OpenAIContentPart[];
@@ -26,145 +17,130 @@ export interface OpenAIMessage {
 }
 
 // ==========================================
-// 2. Constants & System Instructions
+// 1. System Prompt Definitions (Chinese)
 // ==========================================
+
+export const createEmptyMedicalRecord = (): MedicalRecord => ({
+  knowledgeChunks: [],
+  basicInfo: { name: '', gender: '', age: '', marital: '', occupation: '', season: '' },
+  chiefComplaint: '',
+  historyOfPresentIllness: '',
+  pastHistory: '',
+  allergies: '',
+  currentSymptoms: {
+    coldHeat: '', sweat: '', headBody: '', stoolsUrine: '', diet: '', sleep: '', emotion: '', gynecology: '', patientFeedback: '',
+  },
+  physicalExam: { tongue: '', pulse: '', general: '', bloodPressureReadings: [], },
+  auxExams: { labResults: [], other: '', },
+  diagnosis: { tcm: '', western: '', treatmentPlans: [] },
+});
+
 export const TCM_Clinical_Logic_Calculator_Prompt = `
-# Role: 中医临床逻辑演算专家 (TCM Clinical Logic Calculator)
+# 角色：中医临床逻辑演算引擎 (TCM Logic Engine)
+# 上下文：你是一个高级中医专家系统。基于提供的【处方计算数据】、【三焦动力学仿真】和【患者病历知识库】，对处方进行深度逻辑推演。
+# 输入数据：
+1. 处方数据（PTI指数、矢量方向）。
+2. 三焦仿真数据。
+3. 患者病历信息（检索到的相关知识片段）。
 
-## Profile
-- **核心思维**: 治病求本、战略定力、工艺精究。
-- **操作准则**: 
-    1.  **零诱导**: 提示词中不包含任何具体症状示例，完全基于用户输入的【处方】与【元信息】进行现场演算。
-    2.  **守正笃实**: 对于非核心、非危急的新发症状，首选“观察”或“外围调理”，**严禁轻易动摇君臣主药**。
-    3.  **工艺致胜**: 坚信“煎法即药法”。通过精准的工艺建议（如后下、久煎）来微调药效，而非随意改方。
-
-## Core Protocols (逻辑底层协议)
-在生成任何文字前，必须后台运行以下逻辑校验：
-
-1.  **【战略定力协议】(Strategic Stability)**:
-    -   *定义*: 设定主方核心（君臣药）为“战略锚点”。
-    -   *约束*: 
-        -   面对新发症状，首先评估其**危急度**。
-        -   若为轻微/一过性：判定为“黄色警报”，策略为**【守方观察】**或**【工艺微调】**。
-        -   若为剧烈/持续加重：判定为“红色警报”，策略才为**【调整主方】**。
-
-2.  **【时空锚点协议】(Temporal Anchoring)**:
-    -   *定义*: 设定当前方剂开始服用时间为 $T_0$。
-    -   *约束*: 引用症状时必须核实时间戳。严禁将 $T_0$ 前已消失的症状作为当前风险依据。
-
-## Analysis Workflow (结构化逻辑填充)
-
-请根据用户提供的数据，调用内部知识库，对以下逻辑框架进行**无倾向性、沉稳**的演算与填充：
-
-1. 【辩机析阵】：核心矛盾与配伍逻辑整合
-指令：使用HTML表格或列表输出，以清晰展示对比分析。以【元信息】最新日期血压数据作为起点分析。
-
-本虚标实审计：
-引用【元信息】，先质疑并分析【计算工坊】、【三焦权重】的计算结果。
-结合实验室检查结果，中西医角度分别评估患者的[核心病机]（本）与[表象症状]（标）最新情况。
-质疑：当前方剂是否抓住了“本”？引用【相关名医智慧】反思判断。
-
-核心制衡点：
-识别方中的制衡结构，结合【元信息】分析。对风险机制解析、配伍智慧揭示、个体化警示进行简述。
-反思：这种制衡在应对[当前标症]时是否不足？是否有线性思维？引用【相关名医智慧】来说明制衡评估应重“功能匹配”而非“重量对比。
-
-模块化博弈：
-精炼分析各功能模块的力量对比。主要方向是战略重心识别（哪类功能占主导）疗效证据链构建（该模块是否见效）主次矛盾判断（当前应“守本”还是“治标”）
-验证：主攻方向是否已见效？反思质疑是否过于苛刻。
-
-批判性漏洞扫描：
-假设：如果不改方，[标症]会自行缓解吗？是排病反应还是药不对症？执行风险排查，避免过于依赖典型热象，忽视非典型表现。然后再反思，如果排病反应/药不对症又会有什么问题？遵循【缓急有序】思维应如何判断？。
-
-
-### 2. 【斟酌】：法随证立与药性取舍 (核心逻辑)
-指令：请思考当前步骤应该用HTML的什么方式来输出更符合当前环境？如何引用【相关名医智慧】来灵活执行以下任务。
-甄别机要 (药物特性扫描)**:
-1.药物特性: 概括性介绍和重点关注那些需要不同的煎法药材，因为不同的煎法而导致药性出现“【XX】”反转或“【XX】”的药物。仅需列出相关药材和药性，请注意避免重复。
-2.路径演证 (二策推演)**:
-指令：请思考当前步骤应该用HTML的什么方式来输出更符合当前环境？然后针对甄别出的关键药物，按照药物的性、味、归经、成分、功能等筛选出需要特殊煎法的药物。为每一个药材选择合适的煎法：”请注意，以下法一/法二的步骤只是参考，清内部理解，无需注意输出。
-3.每一个药材的现在只取其一作为最优解来进行解释，请注意禁止过度推论脱离药理现实，给出理论化操作，忽视煎药依从性，必须完全遵训以人为本的理念。
-如果该药物后下如何、久煎如何。并结合【元信息】以及【实验室检测】（如有）再引用【相关名医智慧】选择其一进行个体化简述评估，并说明为何是这个【法一/法二】方法，无需给出具体煎法。
-
-    -  🔴 法一：取气存性 (【XX】)**
-       法度设想*: 设想该药采用**“【XX】”**或**“【XX】”**之法。
-        推演核心*: 此法意在保留药物的**“【XX】”**与**“【XX】”**。
-        权衡*: 这种“【XX】”或“【XX】”，是否为当前方剂“【XX】所需？是否有“【XX】”之弊？评估炮制品是否是更优选择？如果选择炮制执法，是否支持当前法度？最后给出建议
-    -  🟢 法二：取味制化**
-        法度设想*: 设想该药采用**“【XX】”**或**“【XX】”**之法。
-        推演核心*: 此法意在获取药物的**“【XX】”**、**“【XX】”**或**“【xx】”**。
-        权衡*: 这种“【XX】”或“【XX】”之力，是否更契合全方“【XX】、【XX】”的【XX】？是否通过【XX】了“【XX】”或改变了“【XX】”？评估炮制品是否是更优选择？如果选择炮制执法，是否支持当前法度？最后给出建议
-
-### 3. 【警示】：红线
-*   **新发症状定性**: 
-    -   针对 $t > T_0$ 的症状，在不重复的前提下，进行定性。
-    -   *结论*: 倾向于哪种？是否需要干预？
-*   **事实核查**: 
-    -   列出被数据证伪的理论担忧。并结合【元信息】以及【实验室检测】（如有）来反思自己的担忧是否过度。
-
-### 4. 【结案】：定性与评级
-*   **逻辑闭环**: 
-    -   总结方剂在“治本”与“兼顾标症”之间的得失。请避免重复，精炼语言的反思你是否真正理解方剂？
-*   **评级**: 
-    -   客观评级。并引用【相关名医】语言风格来重点考察方剂的战略定力与结构稳固性，进行简练、专业的评级。
-
-## Initialization
-接收用户输入。
-**启动程序**:
-1.  扫描【元信息】，建立时间轴 $T_0$和个体化基准。
-2.  执行【战略定力协议】。
-3.  输出以“工艺精究”与“治病求本”为核心的分析报告。
-
-## Output Format: STRICT HTML ONLY
-**指令**: 
-1. **直接输出 HTML 代码**，不要包含 markdown 代码块标记 (例如不要使用 \`\`\`html 包裹)。
-2. **严禁**使用 Markdown 格式。
-3. **保持排版整洁**，使用 <h3>, <p>, <ul>, <li>, <strong>, <table> 等标准标签。
-4. **药名处理**: 只输出纯文本药名，前端会自动高亮，不要手动添加 span 标签。
+# 输出要求 (CRITICAL)：
+1. **格式**：使用清晰、结构化的 Markdown。
+   - 使用 ## 标题分隔章节。
+   - 使用 **加粗** 强调核心术语。
+   - 使用表格对比数据。
+   - 使用列表项列出要点。
+2. **逻辑**：将处方的物理属性（寒/热/升/降/收/散）与患者的具体症状、体质进行关联分析。
+3. **风格**：专业、客观、分析性强。避免空话套话，直击病机核心。
+4. **语言**：简体中文。
 `;
-
 export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = TCM_Clinical_Logic_Calculator_Prompt;
 
 export const QUICK_ANALYZE_SYSTEM_INSTRUCTION = `
-# Role: 临床处方审核专家 (Clinical Audit & Optimization Specialist)
-
-## Profile
-- **定位**: 经验丰富的临床主任医师。
-- **目标**: 挑刺、找漏洞、提优化建议。
-- **原则**: 客观犀利，诚实引用。
-
-## Analysis Protocol (快速审核协议)
-
-### 1. 【审方】：漏洞与风险扫描
-*   **背景核查**: 检查方剂是否符合【患者元信息】。
-*   **配伍盲区**: 指出失衡之处。
-
-### 2. 【优化】：增删与调优建议
-*   **基于情境**: 
-    - 若有【患者元信息】：根据具体症状提出加减建议。
-    - 若无【患者元信息】：提供通用的优化方向。
-
-### 3. 【拓思】：异构治疗思路
-*   **跳出框架**: 建议完全不同的治疗思路或经方。
-
-### 4. 【定性】：临床判读
-*   **推测病机**: 一句话概括。
-*   **综合评级**: S/A/B/C。
-
-## Output Format: STRICT HTML ONLY
-**指令**: 
-1. 直接输出 HTML 代码。
-2. **严禁**使用 Markdown 代码块标记。
+# 角色：中医处方安全审核员
+# 任务：快速检查处方针对当前病历的安全性与合理性。
+# 输出：简练的 Markdown 列表。如有配伍禁忌或剂量风险，请用 **加粗** 警告。
+# 语言：简体中文。
 `;
 
-// ==========================================
-// 3. Helper Functions
-// ==========================================
+export const CHAT_SYSTEM_INSTRUCTION_BASE = `
+# 角色：高级中医临床决策支持助手 (CDSS)
+# 指令：
+- 你正在协助医生分析中医处方。
+- 你是系统的管理员级 AI，拥有直接修改病历数据、更新药典数据库的最高权限。
+- 你拥有访问患者【病历知识库】(RAG Context) 和【处方分析数据】的权限。
+- 回答时，必须引用病历中的具体症状或历史记录作为依据。
+- 如果用户要求修改药材数据（如“把黄芪的归经改为肺脾”），请调用工具 \`update_herb_database\`。
+- 如果用户提供了新的关键病历信息（如血压、症状变化），请调用工具 \`save_medical_info\` 或 \`update_medical_record_full\`。
+- 如果用户指出病历中的错误（如OCR识别错误）或需要修正现有信息，请调用工具 \`update_knowledge_chunk\` 进行修改。你需要引用 Context 中提供的 Chunk ID。
+- **格式**：必须使用 Markdown。使用 **加粗** 强调关键术语，使用表格进行对比。
+- **语言**：简体中文。
+`;
 
-const getHeaders = (apiKey: string) => ({
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`
-});
+export const MEDICAL_SEMANTIC_CHUNKING_PROMPT = `
+# 角色：医疗知识语义聚合引擎 (Semantic Chunker)
+# 任务：将零散的医疗文本（包括OCR扫描件、病历记录）重组为完整的语义知识块。
 
+# 核心规则 (CRITICAL):
+1. **禁止碎片化**：严禁将一句话、一个诊断结论或一项检查的完整描述拆分成多个片段。如果原文中因为换行符导致句子断裂，**必须**将它们合并。
+2. **完整语义**：每个知识块必须是一个独立的、语义完整的陈述。
+   - 错误示例：Chunk1: "OM2", Chunk2: "属于...", Chunk3: "非阻塞性..."
+   - 正确示例：Chunk1: "OM2 (第二钝缘支) 属于中层非阻塞性冠心病，管腔中度狭窄。"
+3. **标签分类**：准确识别内容并打上标签（如：主诉、现病史、超声心动图、冠脉造影、西医诊断、中医诊断、用药记录）。
+4. **数值保留**：所有的检测数值、日期必须保留在相关的上下文中，不可单独成块。
+
+# 示例输入：
+"2025.11.09
+冠状动脉
+CTA显示：前降支
+近段混合斑块，管腔
+中度狭窄(50-60%)。"
+
+# 示例输出：
+[
+  { "content": "2025.11.09 冠状动脉CTA显示：前降支近段混合斑块，管腔中度狭窄(50-60%)。", "tags": ["辅助检查", "CTA", "心血管"] }
+]
+
+# 输出格式：
+纯 JSON 数组，不包含 markdown 代码块标记。
+`;
+
+export const MEDICAL_ORGANIZE_PROMPT = `
+# 角色：医疗数据结构化归纳引擎
+# 任务：整理零散的病历片段，生成结构化的汇总信息。重点关注时间线和检查数据。
+
+# 输入：一系列病历文本片段。
+
+# 输出要求：
+请生成一个 Markdown 格式的汇总报告，必须包含以下部分（如果输入中有相关信息）：
+
+1. **生命体征趋势**：
+   - 将所有血压 (BP)、心率 (HR) 数据按时间顺序整理成 Markdown 表格。
+   - 表头：日期 | 时间 | 血压 (mmHg) | 心率 (bpm) | 备注 (体位/状态)
+   - 必须按年/月/日排序。
+
+2. **实验室检查汇总**：
+   - 将同一类型的检查（如血常规、生化、凝血）归纳在一起。
+   - 使用表格展示关键异常指标及其变化。
+   - 表头：日期 | 检查项目 | 关键指标 | 结果 | 参考范围
+
+3. **关键病史时间轴**：
+   - 用列表形式简述发病、就诊、治疗的关键节点。
+
+# 格式示例：
+## 🩸 血压/心率监测记录
+| 日期 | 时间 | 血压 | 心率 | 备注 |
+|---|---|---|---|---|
+| 2023-10-01 | 08:00 | 150/95 | 88 | 晨起未服药 |
+
+## 🧪 关键检查结果
+...
+
+# 注意：
+- 只输出 Markdown 内容，不要包含 <think> 标签或无关废话。
+- 确保数据准确，不要编造。
+`;
+
+const getHeaders = (apiKey: string) => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` });
 const getBaseUrl = (url?: string) => {
     let base = url ? url.trim() : "https://api.openai.com/v1";
     if (base.endsWith('/')) base = base.slice(0, -1);
@@ -172,139 +148,301 @@ const getBaseUrl = (url?: string) => {
     return base;
 };
 
-// Robustly clean JSON string from Markdown
+// IMPROVED: Robust JSON cleaner that ignores Markdown blocks and preamble/postscript
 const cleanJsonString = (str: string): string => {
-    const match = str.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-    if (match && match[1]) {
-        return match[1].trim();
+    // 1. Locate the first '[' and last ']' to extract the potential array
+    const start = str.indexOf('[');
+    const end = str.lastIndexOf(']');
+    
+    if (start !== -1 && end !== -1 && end > start) {
+        return str.substring(start, end + 1);
     }
+    
+    // Fallback: If no array brackets, maybe it wrapped in markdown code block without brackets?
+    // Try to remove markdown syntax
+    const match = str.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (match && match[1]) return match[1].trim();
+
     return str.trim();
 };
 
 const sanitizeMessageHistory = (messages: OpenAIMessage[]): OpenAIMessage[] => {
     if (!messages || messages.length === 0) return [];
-
     const sanitized: OpenAIMessage[] = [];
     const validMessages = [...messages];
-
     for (let i = 0; i < validMessages.length; i++) {
         const msg = { ...validMessages[i] };
-
         if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
             const requiredIds = new Set(msg.tool_calls.map(tc => tc.id));
             const foundIds = new Set<string>();
-
             for (let j = i + 1; j < validMessages.length; j++) {
                 const nextMsg = validMessages[j];
                 if (nextMsg.role === 'tool') {
-                    if (nextMsg.tool_call_id && requiredIds.has(nextMsg.tool_call_id)) {
-                        foundIds.add(nextMsg.tool_call_id);
-                    }
-                } else {
-                    break;
-                }
+                    if (nextMsg.tool_call_id && requiredIds.has(nextMsg.tool_call_id)) foundIds.add(nextMsg.tool_call_id);
+                } else break;
             }
-
-            if (requiredIds.size === foundIds.size) {
-                sanitized.push(msg);
-            } else {
-                delete msg.tool_calls;
-                if (msg.content) {
-                    sanitized.push(msg);
-                }
-            }
-        } 
-        else if (msg.role === 'tool') {
-            const lastAccepted = sanitized[sanitized.length - 1];
-            if (lastAccepted && lastAccepted.role === 'assistant' && lastAccepted.tool_calls) {
-                const parentCall = lastAccepted.tool_calls.find(tc => tc.id === msg.tool_call_id);
-                if (parentCall) {
-                    sanitized.push(msg);
-                }
-            }
-        }
-        else {
-            if (msg.content || (msg.role === 'assistant' && msg.tool_calls)) {
-                 sanitized.push(msg);
-            }
-        }
+            if (requiredIds.size === foundIds.size) sanitized.push(msg);
+            else { delete msg.tool_calls; if (msg.content) sanitized.push(msg); }
+        } else { if (msg.content || (msg.role === 'assistant' && msg.tool_calls) || msg.role === 'system') sanitized.push(msg); }
     }
-
     return sanitized;
 };
 
+async function fetchWithRetry(url: string, options: RequestInit, retries = MAX_RETRIES, initialDelay = DEFAULT_RETRY_DELAY): Promise<Response> {
+  let delay = initialDelay;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      
+      // If success, return immediately
+      if (response.ok) return response;
+
+      // Handle 429 (Too Many Requests) and 503 (Service Unavailable) explicitly
+      if (response.status === 429 || response.status === 503) {
+          const retryAfter = response.headers.get('Retry-After');
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : delay;
+          console.warn(`[API] Rate limit/Busy (${response.status}). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${retries})`);
+          await new Promise(res => setTimeout(res, waitTime));
+          delay *= 2; // Exponential backoff
+          continue; 
+      }
+
+      // Don't retry other client errors (4xx)
+      if (response.status >= 400 && response.status < 500) {
+          return response;
+      }
+
+      // Retry 5xx errors
+      if (response.status >= 500) {
+           console.warn(`[API] Server error (${response.status}). Retrying... (Attempt ${i + 1}/${retries})`);
+           await new Promise(res => setTimeout(res, delay));
+           delay *= 2;
+           continue;
+      }
+      
+      return response;
+    } catch (error: any) {
+      // Network errors (fetch failed)
+      if (error.name === 'AbortError') throw error;
+      
+      console.warn(`[API] Network error: ${error.message}. Retrying... (Attempt ${i + 1}/${retries})`);
+      if (i === retries - 1) throw error;
+      await new Promise(res => setTimeout(res, delay));
+      delay *= 2;
+    }
+  }
+  throw new Error(`Request failed after ${retries} retries.`);
+}
+
 // ==========================================
-// 4. Service Functions
+// 2. Vector / RAG Functions
 // ==========================================
+
+// Supports Single string or Array of strings (Batching)
+export const createEmbedding = async (input: string | string[], settings: AISettings): Promise<number[] | number[][] | null> => {
+    // IGNORE settings.apiKey/embeddingModel for vectors. Use Built-in.
+    // However, we still accept 'settings' argument for interface compatibility.
+    const apiKey = VECTOR_API_KEY;
+    const baseUrl = VECTOR_API_URL;
+    const model = DEFAULT_EMBEDDING_MODEL;
+    
+    // Safety check for empty input
+    if (Array.isArray(input) && input.length === 0) return [];
+    if (typeof input === 'string' && !input.trim()) return null;
+
+    // --- CRITICAL FIX FOR 413 ERROR ---
+    // SiliconFlow Limit: 8192 tokens. Safe char limit approx 20k.
+    const MAX_CHAR_LIMIT = 20000;
+    
+    const sanitizeInput = (str: string) => {
+        if (str.length > MAX_CHAR_LIMIT) {
+            console.warn(`[Embedding] Input truncated from ${str.length} to ${MAX_CHAR_LIMIT} chars to avoid 413 error.`);
+            return str.slice(0, MAX_CHAR_LIMIT); // Truncate
+        }
+        return str;
+    };
+
+    let processedInput: string | string[];
+    
+    if (Array.isArray(input)) {
+        processedInput = input.map(s => sanitizeInput(s.replace(/\n/g, ' ')));
+    } else {
+        processedInput = sanitizeInput(input.replace(/\n/g, ' '));
+    }
+
+    try {
+        const url = `${getBaseUrl(baseUrl)}/embeddings`;
+        
+        const payload = {
+            model: model,
+            input: processedInput
+        };
+        
+        // Use default retry mechanism (5 retries with backoff) for embedding
+        const res = await fetchWithRetry(url, { 
+            method: 'POST', 
+            headers: getHeaders(apiKey), 
+            body: JSON.stringify(payload) 
+        });
+        
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Embedding failed (SiliconFlow): ${res.status} ${res.statusText} - ${errText.substring(0, 100)}`);
+        }
+        const data = await res.json();
+        
+        // Handle response format
+        if (data.data && Array.isArray(data.data)) {
+            // Sort by index to ensure order matches input
+            const sorted = data.data.sort((a: any, b: any) => a.index - b.index);
+            
+            if (Array.isArray(input)) {
+                return sorted.map((d: any) => d.embedding) as number[][];
+            } else {
+                return sorted[0].embedding as number[];
+            }
+        }
+        return null;
+    } catch (e: any) {
+        throw e;
+    }
+};
+
+export const cosineSimilarity = (vecA: number[], vecB: number[]) => {
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < vecA.length; i++) {
+        dotProduct += vecA[i] * vecB[i];
+        normA += vecA[i] * vecA[i];
+        normB += vecB[i] * vecB[i];
+    }
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+};
+
+export const localVectorSearch = async (
+    query: string, 
+    chunks: MedicalKnowledgeChunk[], 
+    settings: AISettings, 
+    topK = 8
+): Promise<MedicalKnowledgeChunk[]> => {
+    if (chunks.length === 0) return [];
+    
+    // 1. Always try vector search first since we have built-in engine
+    try {
+        const queryVec = await createEmbedding(query, settings); // Uses hardcoded engine internally
+        if (queryVec && !Array.isArray(queryVec[0])) { // Ensure it's a single vector
+            const vec = queryVec as number[];
+            const scored = chunks.map(chunk => {
+                if (!chunk.embedding) return { chunk, score: -1 };
+                return { chunk, score: cosineSimilarity(vec, chunk.embedding) };
+            });
+            return scored
+                .filter(item => item.score > 0.3) // Threshold
+                .sort((a, b) => b.score - a.score)
+                .slice(0, topK)
+                .map(item => item.chunk);
+        }
+    } catch (e) {
+        console.warn("RAG Vector search failed (likely embedding error), falling back to keywords.", e);
+    }
+    
+    // 2. Fallback: Keyword matching
+    const keywords = query.split(/[\s,，。?!]+/).filter(k => k.length > 1);
+    if (keywords.length === 0) return chunks.slice(-topK); // Return latest
+
+    // Simple scoring for keywords
+    const scoredChunks = chunks.map(chunk => {
+        let score = 0;
+        keywords.forEach(k => {
+            if (chunk.content.includes(k)) score += 1;
+        });
+        return { chunk, score };
+    });
+
+    return scoredChunks
+        .filter(c => c.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK)
+        .map(item => item.chunk);
+};
+
+export const organizeKnowledgeBase = async (chunks: MedicalKnowledgeChunk[], settings: AISettings): Promise<string> => {
+    // Uses the passed settings (visitor or admin logic handles key/url)
+    if (!settings.apiKey) throw new Error("Missing Chat API Key");
+    
+    const combinedText = chunks.map(c => c.content).join("\n\n");
+    if (combinedText.length > 30000) throw new Error("知识库内容过长，暂不支持全量整理。"); // Safety cap
+
+    const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
+    const payload = {
+        model: settings.model || "gpt-3.5-turbo",
+        messages: [
+            { role: "system", content: MEDICAL_ORGANIZE_PROMPT },
+            { role: "user", content: `请整理以下病历数据：\n\n${combinedText}` }
+        ],
+        // DeepSeek models work better with slightly higher temp for creative organization tasks or default
+        // But for strict tasks, 0.5 is safer than 0.1 for R1 models to allow 'thinking'
+        temperature: 0.6 
+    };
+
+    const res = await fetchWithRetry(url, { 
+        method: "POST", 
+        headers: getHeaders(settings.apiKey), 
+        body: JSON.stringify(payload) 
+    });
+    
+    if (!res.ok) throw new Error("Organization failed: " + res.status);
+    const data = await res.json();
+    let content = data.choices?.[0]?.message?.content || "";
+    
+    // Remove <think> tags if present (DeepSeek specific)
+    content = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    
+    return content;
+};
+
+// ... (Rest of existing API functions: testModelConnection, fetchAvailableModels, generateHerbDataWithAI etc.)
 
 export const testModelConnection = async (baseUrl: string, apiKey: string): Promise<string> => {
     try {
         const models = await fetchAvailableModels(baseUrl, apiKey);
         return `连接成功！共发现 ${models.length} 个可用模型。`;
-    } catch (e: any) {
-        throw new Error(`连接失败: ${e.message}`);
-    }
-}
+    } catch (e: any) { throw new Error(`连接失败: ${e.message}`); }
+};
 
 export const fetchAvailableModels = async (baseUrl: string, apiKey: string): Promise<ModelOption[]> => {
     try {
         const url = `${getBaseUrl(baseUrl)}/models`;
-        const res = await fetch(url, { headers: getHeaders(apiKey) });
-        
-        if (!res.ok) {
-            const err = await res.text();
-            throw new Error(`Failed to fetch models: ${res.status} ${err}`);
-        }
-
+        const res = await fetchWithRetry(url, { headers: getHeaders(apiKey) });
+        if (!res.ok) throw new Error(`Failed to fetch models`);
         const data = await res.json();
-        if (data.data && Array.isArray(data.data)) {
-            return data.data.map((m: any) => ({ id: m.id, name: m.id }));
-        }
+        if (data.data && Array.isArray(data.data)) return data.data.map((m: any) => ({ id: m.id, name: m.id }));
         return [];
-    } catch (e) {
-        console.error("Model fetch error:", e);
-        throw e;
-    }
+    } catch (e) { console.error("Model fetch error:", e); throw e; }
 };
 
 export const generateHerbDataWithAI = async (herbName: string, settings: AISettings): Promise<BenCaoHerb | null> => {
     if (!settings.apiKey) throw new Error("API Key is missing");
-
-    const systemPrompt = `你是一位精通《中华人民共和国药典》(2025版)的中药学专家。
-你的任务是为名为"${herbName}"的中药补充详细数据。
-请严格按照以下 JSON 格式返回数据，不要包含任何 Markdown 格式。
-
-{
-  "name": "${herbName}",
-  "nature": "枚举值之一，如: 温",
-  "flavors": ["五味数组", "例如", "辛", "苦"],
-  "meridians": ["归经数组", "例如", "肝", "脾"],
-  "efficacy": "功能主治 (务必包含炮制品的特色功效描述)",
-  "usage": "用法用量 (例如: 3~9g)",
-  "category": "药材 或 炮制品",
-  "processing": "如有炮制方法则填，否则填 生用"
-}
-如果该药材不存在或无法确认，请返回 null。`;
-
+    const systemPrompt = `你是一位精通《中华人民共和国药典》(2025版)的中药学专家。请返回 ${herbName} 的 JSON 数据。包含 nature, flavors, meridians, efficacy, usage, processing。`; 
     try {
         const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
         const payload = {
             model: settings.model || settings.analysisModel || "gpt-3.5-turbo",
             messages: [{ role: "system", content: systemPrompt }, { role: "user", content: herbName }],
             temperature: 0.1, 
+            response_format: { type: "json_object" }
         };
-    
-        const res = await fetch(url, {
-            method: "POST",
-            headers: getHeaders(settings.apiKey),
-            body: JSON.stringify(payload)
-        });
-    
+        const res = await fetchWithRetry(url, { method: "POST", headers: getHeaders(settings.apiKey), body: JSON.stringify(payload) });
         if (!res.ok) throw new Error("API call failed");
         const data = await res.json();
-        const content = data.choices?.[0]?.message?.content;
-        if (!content) return null;
+        let content = data.choices?.[0]?.message?.content;
+        
+        // Clean DeepSeek think tags
+        if (content) content = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 
+        if (!content) return null;
         const json = JSON.parse(cleanJsonString(content));
         return {
              id: `custom-${Date.now()}`,
@@ -319,40 +457,7 @@ export const generateHerbDataWithAI = async (herbName: string, settings: AISetti
              processing: json.processing,
              isRaw: false
         } as BenCaoHerb;
-    } catch (e) {
-        console.error("Failed to parse AI response", e);
-        return null;
-    }
-};
-
-export const summarizeMessages = async (messages: any[], settings: AISettings): Promise<string> => {
-    if (!settings.apiKey) throw new Error("API Key is missing for summarization");
-
-    const systemPrompt = "你是一位专业的对话总结助手。请将以下对话历史压缩成一段精炼的“记忆摘要”。保留关键的医学判断、药方修改记录和重要结论。";
-
-    try {
-        const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
-        const payload = {
-            model: settings.model || settings.chatModel || "gpt-3.5-turbo",
-            messages: [{ role: "system", content: systemPrompt }, ...messages],
-            temperature: 0.3,
-            max_tokens: 500
-        };
-
-        const res = await fetch(url, {
-            method: "POST",
-            headers: getHeaders(settings.apiKey),
-            body: JSON.stringify(payload)
-        });
-
-        if (!res.ok) throw new Error("Summarization failed");
-        const data = await res.json();
-        const summary = data.choices?.[0]?.message?.content || "";
-        return `【历史对话摘要】：${summary}`;
-    } catch (e) {
-        console.error("Summarization error:", e);
-        return ""; 
-    }
+    } catch (e) { return null; }
 };
 
 export async function* analyzePrescriptionWithAI(
@@ -363,38 +468,38 @@ export async function* analyzePrescriptionWithAI(
     existingReport?: string,
     signal?: AbortSignal,
     customSystemInstruction?: string,
-    metaInfo?: string 
+    medicalRecord?: MedicalRecord
 ): AsyncGenerator<string, void, unknown> {
     const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
     
-    const metaInfoContext = metaInfo && metaInfo.trim() !== '' 
-        ? metaInfo 
-        : "未提供";
-
-    const context = `
-    【处方原文】: ${prescriptionInput}
-    【患者元信息】: ${metaInfoContext}
-    【计算数据】: 总寒热指数 ${analysis.totalPTI.toFixed(2)}; 
-    【三焦分布】: 上 ${analysis.sanJiao.upper.percentage.toFixed(0)}%, 中 ${analysis.sanJiao.middle.percentage.toFixed(0)}%, 下 ${analysis.sanJiao.lower.percentage.toFixed(0)}%
-    `;
-
-    const sysPrompt = customSystemInstruction || settings.systemInstruction || DEFAULT_ANALYZE_SYSTEM_INSTRUCTION;
-
-    const messages: OpenAIMessage[] = [
-        { role: "system", content: sysPrompt },
-    ];
-
-    if (existingReport) {
-        messages.push({ role: "user", content: `请对以下处方进行深度分析:\n${context}` });
-        messages.push({ role: "assistant", content: existingReport });
-        messages.push({ role: "user", content: "Continue generating the HTML report exactly from where you left off." });
+    // RAG Retrieval
+    let contextStr = "未提供详细病历。";
+    if (medicalRecord && medicalRecord.knowledgeChunks.length > 0) {
+        // Retrieve chunks relevant to the prescription and general analysis keywords
+        const query = `${prescriptionInput} 病机 诊断 症状`;
+        const relevantChunks = await localVectorSearch(query, medicalRecord.knowledgeChunks, settings, 10);
+        
+        if (relevantChunks.length > 0) {
+            contextStr = relevantChunks.map(c => `- ${c.content}`).join("\n");
+        }
     } else {
-        messages.push({ role: "user", content: `请对以下处方进行深度分析:\n${context}` });
-        if (regenerateInstructions) {
-            messages.push({ role: "user", content: `补充指令: ${regenerateInstructions}` });
+        // Fallback to structured fields if chunks are empty (Legacy support)
+        if (medicalRecord && medicalRecord.basicInfo.name) {
+             contextStr = JSON.stringify(medicalRecord, null, 2);
         }
     }
 
+    const context = `【处方原文】: ${prescriptionInput}\n【患者病历知识库 (RAG Context)】: \n${contextStr}\n...`; 
+    const sysPrompt = customSystemInstruction || settings.systemInstruction || DEFAULT_ANALYZE_SYSTEM_INSTRUCTION;
+    const messages: OpenAIMessage[] = [{ role: "system", content: sysPrompt }];
+    if (existingReport) {
+        messages.push({ role: "user", content: `...` }); 
+        messages.push({ role: "assistant", content: existingReport });
+        messages.push({ role: "user", content: "Continue..." });
+    } else {
+        messages.push({ role: "user", content: `请对以下处方进行深度分析:\n${context}` });
+        if (regenerateInstructions) messages.push({ role: "user", content: `补充指令: ${regenerateInstructions}` });
+    }
     const payload = {
         model: settings.model || settings.analysisModel || "gpt-3.5-turbo",
         messages: messages,
@@ -403,56 +508,38 @@ export async function* analyzePrescriptionWithAI(
         max_tokens: settings.maxTokens || 4000,
         stream: true
     };
-
-    const res = await fetch(url, {
-        method: "POST",
-        headers: getHeaders(settings.apiKey),
-        body: JSON.stringify(payload),
-        signal: signal
-    });
-
-    if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`AI Analysis Failed: ${res.status} ${res.statusText}`);
-    }
-
+    const res = await fetchWithRetry(url, { method: "POST", headers: getHeaders(settings.apiKey), body: JSON.stringify(payload), signal: signal });
+    if (!res.ok) throw new Error(`AI Analysis Failed`);
     if (!res.body) return;
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
-
     try {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
-
             for (const line of lines) {
                 if (line.trim().startsWith("data: ")) {
                     const dataStr = line.slice(6).trim();
-                    if (dataStr === "[DONE]") {
-                        return;
-                    }
+                    if (dataStr === "[DONE]") return;
                     try {
                         const json = JSON.parse(dataStr);
                         const chunk = json.choices[0]?.delta?.content;
                         if (chunk) {
-                            let cleanChunk = chunk;
-                            if (cleanChunk.includes("```html")) cleanChunk = cleanChunk.replace("```html", "");
-                            if (cleanChunk.includes("```")) cleanChunk = cleanChunk.replace("```", "");
+                            // DeepSeek: Skip <think> content if user wants raw output, but streaming is tricky. 
+                            // For report generation, we often want just the result. 
+                            // However, filtering <think> in stream is hard. We assume user accepts think trace or model obeys system prompt.
+                            let cleanChunk = chunk.replace("```html", "").replace("```", "");
                             yield cleanChunk;
                         }
-                    } catch (e) {
-                    }
+                    } catch (e) {}
                 }
             }
         }
-    } finally {
-        reader.releaseLock();
-    }
+    } finally { reader.releaseLock(); }
 };
 
 export async function* generateChatStream(
@@ -462,231 +549,203 @@ export async function* generateChatStream(
     reportContent: string | undefined,
     settings: AISettings,
     signal: AbortSignal | undefined,
-    metaInfo: string,
+    medicalRecord: MedicalRecord,
     systemInstruction: string 
 ): AsyncGenerator<{ text?: string, functionCalls?: {id: string, name: string, args: any}[] }, void, unknown> {
     const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
     
-    const systemMsg: OpenAIMessage = {
-        role: "system",
-        content: systemInstruction 
-    };
-
-    const apiHistory: OpenAIMessage[] = history.map(m => {
-        const apiMsg: OpenAIMessage = {
-            role: m.role === 'model' ? 'assistant' : (m.role === 'tool' ? 'tool' : 'user'),
-            content: null
-        };
-
-        if (m.role === 'tool') {
-             apiMsg.tool_call_id = m.toolCallId;
-             apiMsg.content = m.text;
-        } else if (m.role === 'model') {
-             apiMsg.content = m.text || null;
-             apiMsg.tool_calls = m.toolCalls;
-        } else {
-             if (m.attachments && m.attachments.length > 0) {
-                 const contentParts: OpenAIContentPart[] = [];
-                 if (m.text) contentParts.push({ type: 'text', text: m.text });
-                 m.attachments.forEach((att: any) => {
-                     if (att.type === 'image') {
-                         contentParts.push({
-                             type: 'image_url',
-                             image_url: { url: att.content }
-                         });
-                     } else {
-                         const fileContext = `\n\n[Attached File: ${att.name}]\n${att.content}\n`;
-                         const textPart = contentParts.find(p => p.type === 'text');
-                         if (textPart && textPart.type === 'text') {
-                             textPart.text += fileContext;
-                         } else {
-                             contentParts.push({ type: 'text', text: fileContext });
-                         }
-                     }
-                 });
-                 apiMsg.content = contentParts;
-             } else {
-                 apiMsg.content = m.text;
-             }
+    // Perform RAG for the latest user message
+    let ragContext = "";
+    const lastUserMsg = history.filter(m => m.role === 'user').pop();
+    if (lastUserMsg && medicalRecord.knowledgeChunks.length > 0) {
+        const chunks = await localVectorSearch(lastUserMsg.text, medicalRecord.knowledgeChunks, settings, 5);
+        if (chunks.length > 0) {
+            // INCLUDE CHUNK IDs in Context so LLM can reference them for updates
+            ragContext = `\n\n**相关病历知识 (Retrieval Context)**:\n${chunks.map(c => `> [ID: ${c.id}] ${c.content}`).join('\n')}`;
         }
-        return apiMsg;
-    });
-
-    const MAX_CONTEXT_MESSAGES = 70;
-    let messagesToSend: OpenAIMessage[] = [];
-    
-    if (apiHistory.length > MAX_CONTEXT_MESSAGES) {
-        messagesToSend = apiHistory.slice(apiHistory.length - MAX_CONTEXT_MESSAGES);
-    } else {
-        messagesToSend = [...apiHistory];
     }
 
-    messagesToSend = sanitizeMessageHistory([systemMsg, ...messagesToSend]);
-
+    const systemMsg: OpenAIMessage = { role: "system", content: systemInstruction + ragContext };
+    
+    const apiHistory: OpenAIMessage[] = history.map(m => {
+        if (m.role === 'system') return { role: 'system', content: m.text };
+        if (m.role === 'tool') return { role: 'tool', content: m.text, tool_call_id: m.toolCallId };
+        const role = m.role === 'model' ? 'assistant' : 'user';
+        return { role, content: m.text, tool_calls: m.toolCalls };
+    }); 
+    
     const payload = {
         model: settings.model || settings.chatModel || "gpt-3.5-turbo",
-        messages: messagesToSend,
+        messages: sanitizeMessageHistory([systemMsg, ...apiHistory]),
         temperature: 0.5, 
         stream: true,
         tool_choice: "auto", 
         tools: [
+            { type: "function", function: { name: "lookup_herb", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
+            { type: "function", function: { name: "update_prescription", parameters: { type: "object", properties: { prescription: { type: "string" } }, required: ["prescription"] } } },
+            { type: "function", function: { name: "regenerate_report", parameters: { type: "object", properties: { instructions: { type: "string" } }, required: ["instructions"] } } },
+            { 
+                type: "function", 
+                function: { 
+                    name: "save_medical_info", 
+                    description: "Save NEW medical information (append) or key insights found in conversation.",
+                    parameters: { 
+                        type: "object", 
+                        properties: { 
+                            category: { type: "string", description: "Category like '血压', '主诉', '用药反馈'" },
+                            content: { type: "string", description: "The content to save." } 
+                        }, 
+                        required: ["category", "content"] 
+                    } 
+                } 
+            },
+            // NEW TOOL: Update Existing Chunk
             {
                 type: "function",
                 function: {
-                    name: "lookup_herb",
-                    description: "Search herb details. REQUIRED for checking properties/efficacy.",
+                    name: "update_knowledge_chunk",
+                    description: "Modify an existing knowledge chunk to fix errors (e.g. OCR typos) or update status.",
                     parameters: {
                         type: "object",
                         properties: {
-                            query: { type: "string" }
+                            chunkId: { type: "string", description: "The ID of the chunk to update." },
+                            newContent: { type: "string", description: "The corrected or updated content." }
                         },
-                        required: ["query"]
+                        required: ["chunkId", "newContent"]
                     }
                 }
             },
-            {
-                type: "function",
-                function: {
-                    name: "update_prescription",
-                    description: "Modify current prescription",
-                    parameters: {
-                        type: "object",
-                        properties: {
-                            prescription: { type: "string" }
-                        },
-                        required: ["prescription"]
-                    }
-                }
-            },
-            {
-                type: "function",
-                function: {
-                    name: "regenerate_report",
-                    description: "Rewrites the analysis report. Use when user says 'rewrite report'.",
-                    parameters: {
-                        type: "object",
-                        properties: {
-                            instructions: { type: "string" }
-                        },
-                        required: ["instructions"]
-                    }
-                }
-            },
-            {
-                type: "function",
-                function: {
-                    name: "update_meta_info",
-                    description: "CRITICAL: Propose an update to the medical record (Meta Info). \nRULES:\n1. You MUST read the OLD meta info first.\n2. You MUST NOT delete historical data tables (like Blood Pressure logs).\n3. You MUST APPEND new data to the correct section (e.g. by date).\n4. The `new_info` argument must be the COMPLETE text (Old Content + New Log Entry).\n5. DO NOT SUMMARIZE tables.",
-                    parameters: {
-                        type: "object",
-                        properties: {
-                            new_info: { type: "string", description: "The COMPLETE, merged medical record text (Old + New)." }
-                        },
-                        required: ["new_info"]
-                    }
-                }
-            },
+            // GOD MODE TOOLS
             {
                 type: "function",
                 function: {
                     name: "update_herb_database",
-                    description: "Modifies database herb data. Use when correcting nature/flavor/efficacy.",
+                    description: "Modify or Add a herb entry in the global database (药材库). Use this to fix wrong nature/flavor or add new herbs.",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            name: { type: "string", description: "Herb name" },
+                            nature: { type: "string", description: "Nature (e.g., 温, 寒)" },
+                            flavors: { type: "array", items: { type: "string" }, description: "Flavors (e.g., ['辛', '甘'])" },
+                            meridians: { type: "array", items: { type: "string" }, description: "Meridians (e.g., ['肺', '脾'])" },
+                            efficacy: { type: "string", description: "Efficacy description" },
+                            usage: { type: "string", description: "Usage instructions" }
+                        },
+                        required: ["name"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "update_medical_record_full",
+                    description: "Update basic info or structured fields of the medical record (e.g. Name, Age, Diagnosis). NOT for appending text chunks.",
                     parameters: {
                         type: "object",
                         properties: {
                             name: { type: "string" },
-                            nature: { type: "string" },
-                            flavors: { type: "array", items: { type: "string" } },
-                            meridians: { type: "array", items: { type: "string" } },
-                            efficacy: { type: "string" },
-                            usage: { type: "string" },
-                            processing: { type: "string" }
-                        },
-                        required: ["name"]
+                            age: { type: "string" },
+                            gender: { type: "string" },
+                            tcmDiagnosis: { type: "string", description: "TCM Diagnosis" }
+                        }
                     }
                 }
             }
         ]
     };
-
-    const res = await fetch(url, {
-        method: "POST",
-        headers: getHeaders(settings.apiKey),
-        body: JSON.stringify(payload),
-        signal: signal
-    });
-
-    if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Chat Stream Failed: ${res.status} - ${err}`);
-    }
-
+    const res = await fetchWithRetry(url, { method: "POST", headers: getHeaders(settings.apiKey), body: JSON.stringify(payload), signal: signal });
     if (!res.body) return;
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
-
-    let currentToolCalls: { [index: number]: { id: string, name: string, args: string } } = {};
+    let currentToolCalls: any = {};
+    
+    let hasOutputThinking = false;
 
     try {
-        while (true) {
+        while(true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
-
             for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed.startsWith("data: ")) continue;
-                const dataStr = trimmed.slice(6);
-                if (dataStr === "[DONE]") continue;
-
-                try {
-                    const json = JSON.parse(dataStr);
-                    const delta = json.choices[0].delta;
-                    
-                    if (delta.content) {
-                        yield { text: delta.content };
-                    }
-                    
-                    if (delta.tool_calls) {
-                        delta.tool_calls.forEach((toolDelta: any) => {
-                            const index = toolDelta.index;
-                            if (!currentToolCalls[index]) {
-                                currentToolCalls[index] = { id: '', name: '', args: '' };
+                if (line.trim().startsWith("data: ")) {
+                    const dataStr = line.slice(6).trim();
+                    if (dataStr === "[DONE]") continue;
+                    try {
+                        const json = JSON.parse(dataStr);
+                        const delta = json.choices[0].delta;
+                        
+                        // --- FIX FOR EMPTY REPLIES (DeepSeek R1 / SiliconFlow) ---
+                        // Capture 'reasoning_content' which is often sent before 'content'.
+                        // We format it as a blockquote or pass it raw so the UI can render it.
+                        // Standardizing it to Markdown Quote for compatibility.
+                        if (delta.reasoning_content) {
+                            if (!hasOutputThinking) {
+                                yield { text: "> **Thinking Process:**\n> " };
+                                hasOutputThinking = true;
                             }
-                            if (toolDelta.id) currentToolCalls[index].id = toolDelta.id;
-                            if (toolDelta.function?.name) currentToolCalls[index].name = toolDelta.function.name;
-                            if (toolDelta.function?.arguments) currentToolCalls[index].args += toolDelta.function.arguments;
-                        });
-                    }
-                } catch (e) {
-                }
-            }
-        }
-        
-        const toolCallsArray = Object.values(currentToolCalls);
-        if (toolCallsArray.length > 0) {
-            const parsedCalls = toolCallsArray.map(tc => {
-                try {
-                    return {
-                        id: tc.id,
-                        name: tc.name,
-                        args: JSON.parse(tc.args)
-                    };
-                } catch(e) {
-                    return null;
-                }
-            }).filter(c => c !== null) as {id: string, name: string, args: any}[];
-            
-            if (parsedCalls.length > 0) {
-                yield { functionCalls: parsedCalls };
-            }
-        }
+                            // Prepend '> ' to new lines to keep blockquote format, but simple stream append works too if UI parses markdown line by line
+                            // For simplicity, we just yield the text. Ideally user interface handles <think> tags, but R1 API uses a separate field.
+                            // We stream it as text so it's visible.
+                            const formattedThinking = delta.reasoning_content.replace(/\n/g, "\n> ");
+                            yield { text: formattedThinking };
+                        }
 
-    } finally {
-        reader.releaseLock();
-    }
+                        // Standard Content
+                        if (delta.content) {
+                            if (hasOutputThinking) {
+                                // Add a break after thinking finishes if we just switched
+                                yield { text: "\n\n" };
+                                hasOutputThinking = false;
+                            }
+                            yield { text: delta.content };
+                        }
+                        
+                        if (delta.tool_calls) {
+                            delta.tool_calls.forEach((toolDelta: any) => {
+                                const index = toolDelta.index;
+                                if (!currentToolCalls[index]) currentToolCalls[index] = { id: '', name: '', args: '' };
+                                if (toolDelta.id) currentToolCalls[index].id = toolDelta.id;
+                                if (toolDelta.function?.name) currentToolCalls[index].name = toolDelta.function.name;
+                                if (toolDelta.function?.arguments) currentToolCalls[index].args += toolDelta.function.arguments;
+                            });
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+        const parsedCalls = Object.values(currentToolCalls).map((tc: any) => {
+            try { return { id: tc.id, name: tc.name, args: JSON.parse(tc.args) }; } catch(e){ return null; }
+        }).filter(c => c!==null);
+        if (parsedCalls.length > 0) yield { functionCalls: parsedCalls as any };
+    } finally { reader.releaseLock(); }
 }
+
+export const summarizeMessages = async (messages: any[], settings: AISettings): Promise<string> => {
+    if (!settings.apiKey) return "Error: API Key missing.";
+    const contentToSummarize = messages.map(m => `${m.role}: ${JSON.stringify(m.text || m.content)}`).join("\n");
+    const systemPrompt = "你是一位专业的医疗书记员。请将以下对话历史总结为一份简洁的、按时间顺序排列的医疗摘要。涵盖关键症状、诊断、治疗和患者问题。简明扼要，实事求是。";
+    try {
+        const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
+        const payload = {
+            model: settings.model || "gpt-3.5-turbo",
+            messages: [{ role: "system", content: systemPrompt }, { role: "user", content: contentToSummarize }],
+            temperature: 0.3
+        };
+        const res = await fetchWithRetry(url, { method: "POST", headers: getHeaders(settings.apiKey), body: JSON.stringify(payload) });
+        if (!res.ok) {
+            const errorBody = await res.text();
+            console.error("Summary failed with status:", res.status, "body:", errorBody);
+            throw new Error(`Summary API call failed: ${res.status}`);
+        }
+        const data = await res.json();
+        let content = data.choices?.[0]?.message?.content || "Summary generation failed.";
+        content = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+        return content;
+    } catch (e: any) { 
+        console.error("Error in summarizeMessages:", e);
+        return `Summary failed: ${e.message}`; 
+    }
+};
