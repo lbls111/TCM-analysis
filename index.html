@@ -16,6 +16,13 @@
         --text-primary: #1e293b;
         --text-secondary: #475569;
         --brand-color: #4f46e5;
+        
+        /* TCM Theme Colors */
+        --tcm-primary: #0f766e; /* Teal 700 */
+        --tcm-secondary: #b45309; /* Amber 700 */
+        --tcm-accent: #be123c; /* Rose 700 */
+        --tcm-bg-card: #ffffff;
+        --tcm-border: #e2e8f0;
       }
 
       body {
@@ -85,6 +92,179 @@
       ::-webkit-scrollbar-track { background: transparent; }
       ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+      
+      /* =========================================
+         TCM Report Theme (Rich Typography & Cards) 
+         用于复刻图2的精美渲染效果
+      ========================================= */
+      .tcm-report-content {
+        line-height: 1.8;
+        color: #334155;
+        /* --- 布局修复关键样式 --- */
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden; /* 防止横向撑开 */
+        word-wrap: break-word; /* 强制长词换行 */
+        overflow-wrap: break-word;
+        display: flow-root; /* 创建 BFC，防止子元素 Margin 穿透导致父容器偏移 */
+      }
+      
+      /* 防止内部大元素撑破布局 */
+      .tcm-report-content img,
+      .tcm-report-content table,
+      .tcm-report-content iframe {
+        max-width: 100%;
+        height: auto;
+      }
+
+      /* Headings */
+      .tcm-report-content h1 {
+        font-family: 'Noto Serif SC', serif;
+        font-weight: 900;
+        font-size: 2rem;
+        color: #1e293b;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid #e2e8f0;
+        padding-bottom: 1rem;
+        margin-top: 0; /* 修正顶部偏移 */
+      }
+      
+      .tcm-report-content h2 {
+        font-family: 'Noto Serif SC', serif;
+        font-weight: 700;
+        font-size: 1.5rem;
+        color: var(--tcm-primary);
+        margin-top: 2rem;
+        margin-bottom: 1.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        border-left: 4px solid var(--tcm-primary);
+        padding-left: 1rem;
+        background: linear-gradient(to right, #f0fdfa, transparent);
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+        border-radius: 0 0.5rem 0.5rem 0;
+      }
+      
+      .tcm-report-content h3 {
+        font-family: 'Noto Sans SC', sans-serif;
+        font-weight: 700;
+        font-size: 1.125rem;
+        color: #0f172a;
+        margin-top: 1.5rem;
+        margin-bottom: 0.75rem;
+      }
+
+      /* Lists */
+      .tcm-report-content ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+      .tcm-report-content ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 1rem; }
+      .tcm-report-content li { margin-bottom: 0.25rem; color: #475569; }
+      .tcm-report-content strong { color: #0f172a; font-weight: 700; }
+
+      /* Custom Cards (复刻图2卡片) */
+      .tcm-card {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
+        transition: transform 0.2s, box-shadow 0.2s;
+        position: relative;
+        overflow: hidden;
+        max-width: 100%; /* 确保卡片不溢出 */
+      }
+      
+      .tcm-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
+        border-color: #cbd5e1;
+      }
+      
+      /* Card Headers */
+      .tcm-card-header {
+        font-family: 'Noto Serif SC', serif;
+        font-weight: 700;
+        font-size: 1.125rem;
+        color: #334155;
+        margin-bottom: 0.75rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px dashed #e2e8f0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      
+      /* Colorful Badges (复刻图2标签) */
+      .tcm-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.125rem 0.625rem;
+        border-radius: 0.375rem;
+        font-size: 0.75rem;
+        font-weight: 700;
+        margin-right: 0.375rem;
+        margin-bottom: 0.25rem;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        color: white;
+        white-space: nowrap; /* 防止标签换行破坏布局 */
+      }
+      
+      .tag-teal { background-color: #0f766e; border: 1px solid #0d9488; } /* 气虚/平和 */
+      .tag-orange { background-color: #c2410c; border: 1px solid #ea580c; } /* 血瘀/实热 */
+      .tag-indigo { background-color: #4338ca; border: 1px solid #4f46e5; } /* 寒湿/阴虚 */
+      .tag-rose { background-color: #be123c; border: 1px solid #e11d48; } /* 警告/风险 */
+      .tag-amber { background-color: #b45309; border: 1px solid #d97706; } /* 气滞 */
+      
+      /* Highlighted Text */
+      .tcm-highlight {
+        background-color: #fef9c3;
+        padding: 0 0.25rem;
+        border-radius: 0.125rem;
+        color: #854d0e;
+        font-weight: 500;
+      }
+
+      /* Data Grid inside Cards */
+      .tcm-grid-2 { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+      @media (min-width: 640px) { .tcm-grid-2 { grid-template-columns: 1fr 1fr; } }
+      
+      /* Special Sections */
+      .tcm-alert-box {
+        background-color: #fff1f2;
+        border-left: 4px solid #f43f5e;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        color: #881337;
+        margin: 1rem 0;
+        font-size: 0.95rem;
+      }
+
+      .tcm-info-box {
+        background-color: #f0f9ff;
+        border-left: 4px solid #0ea5e9;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        color: #0c4a6e;
+        margin: 1rem 0;
+        font-size: 0.95rem;
+      }
+      
+      /* Herb Links inside report */
+      .herb-link {
+        color: #4f46e5;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: underline;
+        text-decoration-color: #c7d2fe;
+        text-underline-offset: 2px;
+        transition: all 0.2s;
+      }
+      .herb-link:hover {
+        background-color: #eef2ff;
+        text-decoration-color: #4f46e5;
+      }
 
       /* Improved Loading Screen */
       .loading-screen {

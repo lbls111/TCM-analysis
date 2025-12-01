@@ -157,14 +157,10 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
       if (!text) return "";
       let cleanText = text;
       
-      // 1. INTELLIGENT EXTRACTION: If a code block exists, extract it
-      const codeBlockMatch = cleanText.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
-      if (codeBlockMatch) {
-          cleanText = codeBlockMatch[1]; 
-      } else {
-          cleanText = cleanText.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
-          cleanText = cleanText.replace(/```\s*$/gi, '');
-      }
+      // 1. UNWRAP CODE BLOCKS
+      cleanText = cleanText.replace(/```(?:html|xml|markdown)?\s*([\s\S]*?)```/gi, (match, content) => {
+          return content;
+      });
 
       // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
       cleanText = cleanText.replace(/<!DOCTYPE html>/gi, '');
@@ -172,23 +168,11 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
       cleanText = cleanText.replace(/<\/?head[^>]*>/gi, '');
       cleanText = cleanText.replace(/<\/?body[^>]*>/gi, '');
 
-      // 3. Fix Indentation (De-indent)
-      // If AI indented the HTML code block, removing fences leaves indentation.
-      // 4 spaces of indentation is interpreted as a Code Block in Markdown. We must remove it.
-      const lines = cleanText.split('\n');
-      const indentedLineMatches = lines.filter(line => line.trim().length > 0).map(line => line.match(/^[ \t]*/)?.[0].length || 0);
-      
-      if (indentedLineMatches.length > 0) {
-          const minIndent = Math.min(...indentedLineMatches);
-          if (minIndent > 0) {
-              cleanText = lines.map(line => line.length >= minIndent ? line.slice(minIndent) : line).join('\n');
-          }
-      }
+      // 3. Fix Indentation logic for HTML tags
+      cleanText = cleanText.replace(/^[ \t]+(<[a-zA-Z\/])/gm, '$1');
 
       if (!herbRegex) return cleanText;
 
-      // FIX: Do not strip <think> tags completely here, handled in service or UI
-      
       return cleanText.replace(herbRegex, (match, p1, offset, string) => {
           // Simple guard: don't replace inside attributes
           const before = string.slice(Math.max(0, offset - 2), offset);
@@ -197,15 +181,6 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
           return `<span class="herb-link cursor-pointer text-indigo-700 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 transition-colors px-0.5 rounded-sm" data-herb-name="${match}">${match}</span>`;
       });
     };
-    
-    // Auto-enable Force Render if content looks like HTML
-    useEffect(() => {
-        const clean = processMessageContent(message.text).trim();
-        const hasCodeBlock = message.text.includes('```html') || message.text.includes('```xml');
-        if (hasCodeBlock || clean.startsWith('<div') || clean.startsWith('<table') || clean.startsWith('<p') || clean.startsWith('<h')) {
-            if (!forceRender) setForceRender(true);
-        }
-    }, [message.text]);
     
     // ... rest of ChatMessageItem ...
     const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -267,16 +242,16 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                             </div>
                         </div>
                     ) : (
-                        // Render Logic Switch
+                        // Render Logic Switch with TCM Theme Class applied
                         forceRender ? (
                             <div 
-                                className="prose prose-lg max-w-none prose-slate prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5"
+                                className="tcm-report-content"
                                 onClick={handleClick}
                                 dangerouslySetInnerHTML={{ __html: processMessageContent(message.text) }}
                             />
                         ) : (
                             <div 
-                              className={`prose prose-lg max-w-none ${isUser ? 'prose-invert' : 'prose-slate'} prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5`}
+                              className={`tcm-report-content ${isUser ? 'prose-invert text-white' : ''}`}
                               onClick={handleClick}
                             >
                                 <ReactMarkdown
@@ -284,11 +259,8 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                                     rehypePlugins={[rehypeRaw]}
                                     components={{
                                         a: ({node, ...props}) => <a {...props} className="text-indigo-500 underline hover:text-indigo-600 font-bold" target="_blank" rel="noreferrer" />,
-                                        table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-lg border border-slate-200 shadow-sm"><table {...props} className="min-w-full text-sm" /></div>,
-                                        th: ({node, ...props}) => <th {...props} className="bg-slate-100/50 font-bold text-left p-2 border-b" />,
-                                        td: ({node, ...props}) => <td {...props} className="p-2 border-b" />,
-                                        strong: ({node, ...props}) => <strong {...props} className="font-bold text-inherit bg-yellow-100/30 px-0.5 rounded" />,
-                                        blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-300 pl-4 py-1 italic bg-slate-50 text-slate-600 my-2 rounded-r" />,
+                                        // Standard elements will inherit .tcm-report-content styles from global CSS
+                                        // But specific overrides for chat bubbles if needed
                                     }}
                                 >
                                     {processMessageContent(message.text)}

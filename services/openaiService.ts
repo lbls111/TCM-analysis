@@ -1,7 +1,6 @@
 import { AnalysisResult, AISettings, ModelOption, BenCaoHerb, MedicalRecord, TreatmentPlanEntry, MedicalKnowledgeChunk } from "../types";
 import { DEFAULT_RETRY_DELAY, MAX_RETRIES, VECTOR_API_URL, VECTOR_API_KEY, DEFAULT_EMBEDDING_MODEL } from "../constants";
 
-// ... (Interfaces remain same)
 export interface OpenAIToolCall {
     id: string;
     type: 'function';
@@ -36,43 +35,95 @@ export const createEmptyMedicalRecord = (): MedicalRecord => ({
 });
 
 export const TCM_Clinical_Logic_Calculator_Prompt = `
-# 角色：中医临床逻辑演算引擎 (TCM Logic Engine)
-# 上下文：你是一个高级中医专家系统。基于提供的【处方计算数据】、【三焦动力学仿真】和【患者病历知识库】，对处方进行深度逻辑推演。
-# 输入数据：
-1. 处方数据（PTI指数、矢量方向）。
-2. 三焦仿真数据。
-3. 患者病历信息（检索到的相关知识片段）。
+# Role: 中医数据解构与逻辑范式分析师
+## 核心任务
+将《假设性方剂与病历文本》解构并呈现为一份**视觉化、结构清晰**的《逻辑解析报告》。你需要充分利用 HTML/CSS 结构来增强可读性，模仿高端医疗数据分析仪表的显示风格。
 
-# 输出要求 (CRITICAL)：
-1. **格式**：使用清晰、结构化的 Markdown。
-   - 使用 ## 标题分隔章节。
-   - 使用 **加粗** 强调核心术语。
-   - 使用表格对比数据。
-   - 使用列表项列出要点。
-2. **逻辑**：将处方的物理属性（寒/热/升/降/收/散）与患者的具体症状、体质进行关联分析。
-3. **风格**：专业、客观、分析性强。避免空话套话，直击病机核心。
-4. **语言**：简体中文。
+## 视觉渲染规范 (CSS Design System)
+你必须直接输出 HTML 代码（嵌入在 Markdown 中），并严格使用以下 CSS 类来构建界面。不要使用内联样式，只使用以下类名：
+
+1. **容器与排版**:
+   - 报告容器自动应用基础样式，你只需关注内容结构。
+   - 标题: 使用 Markdown \`##\` (H2) 作为主要章节，它们会自动获得青色左边框和渐变背景。
+   - 强调: 使用 \`<span class="tcm-highlight">内容</span>\` 高亮关键文本。
+
+2. **卡片布局 (Card Layout)**:
+   - 将所有分析模块放入卡片中：\`<div class="tcm-card">...</div>\`
+   - 卡片内标题：\`<div class="tcm-card-header">标题</div>\`
+   - 双栏布局（如左右对比）：\`<div class="tcm-grid-2">...</div>\`
+
+3. **彩色标签 (Status Tags)** - *用于八纲、病机、风险等级*:
+   - \`<span class="tcm-tag tag-teal">气虚/平和/表证</span>\` (青色：偏正向或中性)
+   - \`<span class="tcm-tag tag-orange">血瘀/实热/气滞</span>\` (橙色：实证或警示)
+   - \`<span class="tcm-tag tag-indigo">寒湿/阴虚/里证</span>\` (靛蓝：阴性或深层)
+   - \`<span class="tcm-tag tag-rose">高风险/禁忌</span>\` (玫瑰红：危险)
+
+4. **提示框**:
+   - 警示: \`<div class="tcm-alert-box">...</div>\`
+   - 信息: \`<div class="tcm-info-box">...</div>\`
+
+## 报告结构蓝图 (必须包含以下章节)
+
+### 01. 辨证坐标系构建 (Dialectical Coordinates)
+*使用卡片布局。*
+- **八纲定位**: 使用 \`tag-teal\`/\`tag-indigo\` 等标签明确寒热虚实表里。
+- **脏腑定位**: 明确病位。
+- **排他性分析**: 简述为何排除其他相似证型。
+
+### 02. 核心矛盾与配伍逻辑 (Core Logic)
+*使用双栏卡片布局 (\`tcm-grid-2\`)。*
+- **左栏: 升降浮沉博弈**: 分析气机流向。
+- **右栏: 药物角色审计**: 哪些是君药（加粗），哪些是佐使。
+- **透明化计算**: 展示势能权重的定性估算。
+
+### 03. 风险扫描与动态追踪 (Risk Scanning)
+*使用警示框 (\`tcm-alert-box\`)。*
+- **关键风险点**: 指出方中可能引起不良反应的配伍。
+- **长期服用预警**: 针对患者体质的长期建议。
+
+### 04. 结案定性 (Conclusion)
+*使用信息框 (\`tcm-info-box\`)。*
+- **综合评级**: 给出逻辑严谨性评级。
+- **名医映射**: 此方类似古代哪个名方（如“隐喻为桂枝汤变方”）。
+
+---
+**禁止事项**:
+- 严禁输出 \`<html>\`, \`<body>\` 等根节点标签。
+- 严禁输出任何可能影响全局布局的 CSS (如 \`position: fixed\`)。
+- 确保所有 \`<div>\` 标签都正确闭合，避免破坏外部容器。
+
+**输出示例**:
+\`\`\`html
+<div class="tcm-card">
+  <div class="tcm-card-header">八纲定位与排他性分析</div>
+  <p>
+    定位：<span class="tcm-tag tag-teal">本虚标实</span> <span class="tcm-tag tag-indigo">寒湿内蕴</span>
+  </p>
+  <p>虽有“防风”在列，但患者咳嗽已减，主要矛盾已由表入里...</p>
+</div>
+\`\`\`
+
+请现在开始分析，直接输出渲染后的 HTML 内容。
 `;
+
 export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = TCM_Clinical_Logic_Calculator_Prompt;
 
 export const QUICK_ANALYZE_SYSTEM_INSTRUCTION = `
 # 角色：中医处方安全审核员
 # 任务：快速检查处方针对当前病历的安全性与合理性。
-# 输出：简练的 Markdown 列表。如有配伍禁忌或剂量风险，请用 **加粗** 警告。
-# 语言：简体中文。
+# 视觉要求：使用 <div class="tcm-alert-box"> 包裹风险提示，使用 <span class="tcm-tag tag-teal"> 标记安全项。
+# 输出：简练的 HTML 片段。
 `;
 
 export const CHAT_SYSTEM_INSTRUCTION_BASE = `
 # 角色：高级中医临床决策支持助手 (CDSS)
 # 指令：
 - 你正在协助医生分析中医处方。
-- 你是系统的管理员级 AI，拥有直接修改病历数据、更新药典数据库的最高权限。
-- 你拥有访问患者【病历知识库】(RAG Context) 和【处方分析数据】的权限。
-- 回答时，必须引用病历中的具体症状或历史记录作为依据。
-- 如果用户要求修改药材数据（如“把黄芪的归经改为肺脾”），请调用工具 \`update_herb_database\`。
-- 如果用户提供了新的关键病历信息（如血压、症状变化），请调用工具 \`save_medical_info\` 或 \`update_medical_record_full\`。
-- 如果用户指出病历中的错误（如OCR识别错误）或需要修正现有信息，请调用工具 \`update_knowledge_chunk\` 进行修改。你需要引用 Context 中提供的 Chunk ID。
-- **格式**：必须使用 Markdown。使用 **加粗** 强调关键术语，使用表格进行对比。
+- 回答时，如果涉及关键医学判断，请使用美观的 HTML 标签来增强可读性。
+- 使用 <span class="tcm-tag tag-orange">关键概念</span> 高亮术语。
+- 使用 <div class="tcm-info-box"> 包裹建议。
+- 如果用户要求修改药材数据，请调用工具 \`update_herb_database\`。
+- **格式**：混合 Markdown 和 HTML (使用 tcm-card, tcm-tag 等类名)。
 - **语言**：简体中文。
 `;
 
@@ -600,7 +651,7 @@ export async function* generateChatStream(
             },
             // NEW TOOL: Update Existing Chunk
             {
-                type: "function",
+                type: "function", 
                 function: {
                     name: "update_knowledge_chunk",
                     description: "Modify an existing knowledge chunk to fix errors (e.g. OCR typos) or update status.",

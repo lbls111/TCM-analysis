@@ -324,39 +324,24 @@ function LogicMasterApp() {
       if (!text) return "";
       let clean = text;
 
-      // 1. INTELLIGENT EXTRACTION: If a code block exists, extract it and ignore surrounding text
-      // This solves the issue of AI saying "Here is your report:" before the actual HTML.
-      const codeBlockMatch = clean.match(/```(?:html|xml)?\s*([\s\S]*?)```/i);
-      if (codeBlockMatch) {
-          clean = codeBlockMatch[1]; // Use only the content inside the block
-      } else {
-          // Fallback: just strip fences if they exist loosely
-          clean = clean.replace(/```(?:html|xml|markdown|css)?\s*(\n|$)/gi, '');
-          clean = clean.replace(/```\s*$/gi, '');
-      }
+      // 1. UNWRAP CODE BLOCKS: Replace the fence with the content, preserving surrounding markdown
+      clean = clean.replace(/```(?:html|xml|markdown)?\s*([\s\S]*?)```/gi, (match, content) => {
+          return content;
+      });
 
-      // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
+      // 2. Strip HTML Document Wrapper Tags (Aggressive sanitization to prevent layout shift)
+      // Remove any <html>, <head>, <body> tags entirely
       clean = clean.replace(/<!DOCTYPE html>/gi, '');
+      clean = clean.replace(/<html[^>]*>[\s\S]*?<body[^>]*>/gi, ''); 
+      clean = clean.replace(/<\/body>[\s\S]*?<\/html>/gi, '');
       clean = clean.replace(/<\/?html[^>]*>/gi, '');
       clean = clean.replace(/<\/?head[^>]*>/gi, '');
       clean = clean.replace(/<\/?body[^>]*>/gi, '');
 
-      // 3. Fix Indentation (De-indent)
-      // If AI indented the HTML code block, removing fences leaves indentation.
-      // 4 spaces of indentation is interpreted as a Code Block in Markdown. We must remove it.
-      const lines = clean.split('\n');
-      const indentedLineMatches = lines.filter(line => line.trim().length > 0).map(line => line.match(/^[ \t]*/)?.[0].length || 0);
-      
-      if (indentedLineMatches.length > 0) {
-          const minIndent = Math.min(...indentedLineMatches);
-          if (minIndent > 0) {
-              clean = lines.map(line => line.length >= minIndent ? line.slice(minIndent) : line).join('\n');
-          }
-      }
+      // 3. Fix Indentation logic for HTML tags
+      clean = clean.replace(/^[ \t]+(<[a-zA-Z\/])/gm, '$1');
 
       // 4. Inject Herb Links
-      // We process text segments to inject HTML spans for herbs.
-      // Since we use rehype-raw, these spans will be rendered correctly.
       if (herbRegex) {
           // Guard against replacing inside HTML attributes
           return clean.replace(herbRegex, (match, p1, offset, string) => {
@@ -372,26 +357,12 @@ function LogicMasterApp() {
   useEffect(() => {
     if (view === ViewMode.REPORT && reports[activeReportVersion]) {
         const currentReport = reports[activeReportVersion];
-        // Use includes instead of endsWith for robustness against markdown/whitespace
-        const isComplete = currentReport.includes('</html>') || currentReport.includes('<!-- DONE -->');
+        const isComplete = currentReport.includes('<!-- DONE -->') || (currentReport.length > 50 && !aiLoading);
         setIsReportIncomplete(!isComplete);
-        
-        // --- AUTO FORCE RENDER LOGIC ---
-        // If content is purely HTML (starts with tag or was inside a block), force render.
-        // We use the raw report content to check for fences, or processed content to check for tags.
-        const processed = processReportContent(currentReport).trim();
-        const hasCodeBlock = currentReport.includes('```html') || currentReport.includes('```xml');
-        
-        if (hasCodeBlock || processed.startsWith('<div') || processed.startsWith('<table') || processed.startsWith('<p') || processed.startsWith('<h')) {
-            // Auto-enable Force Render Mode for better visuals
-            if (!forceRenderMode) {
-                setForceRenderMode(true);
-            }
-        }
     } else {
         setIsReportIncomplete(false);
     }
-  }, [activeReportVersion, reports, view]);
+  }, [activeReportVersion, reports, view, aiLoading]);
 
   // Load Cloud Reports
   useEffect(() => {
@@ -586,17 +557,12 @@ function LogicMasterApp() {
         targetMode = reportMeta[versionToUse]?.mode || 'deep';
         setReports(prev => ({ ...prev, [versionToUse]: '' }));
     } else {
-        const isCurrentVersionEmpty = activeReportVersion && (!reports[activeReportVersion] || reports[activeReportVersion].trim() === '');
-        if (isCurrentVersionEmpty) {
-            versionToUse = activeReportVersion;
-        } else {
-            const existingVersions = Object.keys(reports);
-            const maxVer = existingVersions.reduce((max, key) => {
-               const num = parseInt(key.replace(/^V/, '')) || 0;
-               return Math.max(max, num);
-            }, 0);
-            versionToUse = `V${maxVer + 1}`;
-        }
+        const existingVersions = Object.keys(reports);
+        const maxVer = existingVersions.reduce((max, key) => {
+           const num = parseInt(key.replace(/^V/, '')) || 0;
+           return Math.max(max, num);
+        }, 0);
+        versionToUse = `V${maxVer + 1}`;
         
         targetMode = mode;
         if (targetMode === 'quick' && customReportPrompt === DEFAULT_ANALYZE_SYSTEM_INSTRUCTION) {
@@ -1288,36 +1254,25 @@ function LogicMasterApp() {
                         </div>
                       ) : reports[activeReportVersion] ? (
                          <div className="flex flex-col gap-6">
-                            {/* Rendering Logic: Toggle between ReactMarkdown and Raw HTML */}
-                            {forceRenderMode ? (
-                                <div 
-                                    className="prose prose-indigo prose-lg max-w-none prose-table:border-collapse prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-100"
-                                    onClick={handleReportClick}
-                                    dangerouslySetInnerHTML={{ __html: processReportContent(reports[activeReportVersion]) }}
-                                />
-                            ) : (
-                                <div className="prose prose-indigo prose-lg max-w-none prose-table:border-collapse prose-th:bg-slate-50 prose-th:p-4 prose-td:p-4 prose-th:border prose-th:border-slate-200 prose-td:border prose-td:border-slate-100" onClick={handleReportClick}>
-                                <ReactMarkdown 
-                                    remarkPlugins={[remarkGfm]} 
-                                    rehypePlugins={[rehypeRaw]}
-                                    components={{
-                                    a: ({node, ...props}) => <a {...props} className="text-indigo-600 underline hover:text-indigo-800" />,
-                                    table: ({node, ...props}) => <div className="overflow-x-auto my-4 rounded-xl border border-slate-200 shadow-sm"><table {...props} className="min-w-full" /></div>,
-                                    th: ({node, ...props}) => <th {...props} className="bg-slate-50 text-slate-700 font-bold px-4 py-3 text-left border-b border-slate-200" />,
-                                    td: ({node, ...props}) => <td {...props} className="px-4 py-3 border-b border-slate-100 text-slate-600" />,
-                                    blockquote: ({node, ...props}) => <blockquote {...props} className="border-l-4 border-indigo-500 pl-4 italic text-slate-600 bg-slate-50 py-2 rounded-r-lg my-4" />,
-                                    ul: ({node, ...props}) => <ul {...props} className="list-disc list-outside ml-6 space-y-1 my-4" />,
-                                    ol: ({node, ...props}) => <ol {...props} className="list-decimal list-outside ml-6 space-y-1 my-4" />,
-                                    h1: ({node, ...props}) => <h1 {...props} className="text-3xl font-bold text-slate-900 mt-8 mb-4 border-b border-slate-100 pb-2" />,
-                                    h2: ({node, ...props}) => <h2 {...props} className="text-2xl font-bold text-slate-800 mt-6 mb-3 flex items-center gap-2 after:content-[''] after:h-px after:flex-1 after:bg-slate-100 after:ml-4" />,
-                                    h3: ({node, ...props}) => <h3 {...props} className="text-xl font-bold text-indigo-700 mt-4 mb-2" />,
-                                    strong: ({node, ...props}) => <strong {...props} className="font-bold text-slate-900 bg-slate-100 px-1 rounded" />,
-                                    }}
-                                >
-                                    {processReportContent(reports[activeReportVersion])}
-                                </ReactMarkdown>
-                                </div>
-                            )}
+                            {/* Rendering Logic: Use wrapper class for TCM Theme */}
+                            <div className="tcm-report-content w-full overflow-hidden" onClick={handleReportClick}>
+                                {forceRenderMode ? (
+                                    <div 
+                                        dangerouslySetInnerHTML={{ __html: processReportContent(reports[activeReportVersion]) }}
+                                    />
+                                ) : (
+                                    <ReactMarkdown 
+                                        remarkPlugins={[remarkGfm]} 
+                                        rehypePlugins={[rehypeRaw]}
+                                        components={{
+                                            a: ({node, ...props}) => <a {...props} className="text-indigo-600 underline hover:text-indigo-800" />,
+                                            // Rely on CSS classes for tables, quotes etc defined in index.html tcm-report-content
+                                        }}
+                                    >
+                                        {processReportContent(reports[activeReportVersion])}
+                                    </ReactMarkdown>
+                                )}
+                            </div>
 
                             {isReportIncomplete && (
                                 <div className="mt-4 text-center animate-in fade-in">
