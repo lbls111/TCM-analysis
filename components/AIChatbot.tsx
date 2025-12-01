@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { generateChatStream, OpenAIMessage, OpenAIToolCall, summarizeMessages, createEmptyMedicalRecord, CHAT_SYSTEM_INSTRUCTION_BASE, createEmbedding } from '../services/openaiService';
 import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession, ViewMode, MedicalRecord, MedicalKnowledgeChunk, BenCaoHerb, Patient } from '../types';
@@ -7,9 +8,6 @@ import { fetchCloudChatSessions, saveCloudChatSession, deleteCloudChatSession } 
 import { TokenCapsule } from './TokenCapsule';
 import { useLog } from '../contexts/LogContext';
 import { PromptEditorModal } from './PromptEditorModal';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 
 interface Message {
   role: 'user' | 'model' | 'tool' | 'system';
@@ -147,8 +145,6 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
     const [editValue, setEditValue] = useState(message.text);
     const [isHovering, setIsHovering] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
-    // FORCE RENDER DEFAULT TRUE FOR CHATBOT TO MATCH REPORT STYLE
-    const [forceRender, setForceRender] = useState(true);
 
     if(message.role === 'tool') return null;
 
@@ -241,31 +237,11 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                             </div>
                         </div>
                     ) : (
-                        // Render Logic Switch with TCM Theme Class applied
-                        forceRender ? (
-                            <div 
-                                className="tcm-report-content" // APPLY GLOBAL CSS CLASS HERE
-                                onClick={handleClick}
-                                dangerouslySetInnerHTML={{ __html: processMessageContent(message.text) }}
-                            />
-                        ) : (
-                            <div 
-                              className={`tcm-report-content ${isUser ? 'prose-invert text-white' : ''}`}
-                              onClick={handleClick}
-                            >
-                                <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
-                                    rehypePlugins={[rehypeRaw]}
-                                    components={{
-                                        a: ({node, ...props}) => <a {...props} className="text-indigo-500 underline hover:text-indigo-600 font-bold" target="_blank" rel="noreferrer" />,
-                                        // Standard elements will inherit .tcm-report-content styles from global CSS
-                                        // But specific overrides for chat bubbles if needed
-                                    }}
-                                >
-                                    {processMessageContent(message.text)}
-                                </ReactMarkdown>
-                            </div>
-                        )
+                        <div 
+                            className="tcm-report-content"
+                            onClick={handleClick}
+                            dangerouslySetInnerHTML={{ __html: processMessageContent(message.text) }}
+                        />
                     )}
                 </div>
                 {/* ... action buttons ... */}
@@ -273,17 +249,6 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                     <div className={`mt-2 flex items-center gap-2 transition-opacity duration-200 ${isHovering || copySuccess ? 'opacity-100' : 'opacity-0'} ${isUser ? 'flex-row-reverse' : ''}`}>
                          {copySuccess && <span className="text-xs text-emerald-600 font-bold animate-pulse">已复制</span>}
                          
-                         {/* Force Render Toggle */}
-                         {!isUser && (
-                             <button 
-                                onClick={() => setForceRender(!forceRender)} 
-                                className={`p-1.5 rounded-lg transition-colors ${forceRender ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-100'}`}
-                                title={forceRender ? "切换回 Markdown" : "切换到强制 HTML 渲染"}
-                             >
-                                👁️
-                             </button>
-                         )}
-
                          <button onClick={handleCopy} className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-slate-100 transition-colors" title="复制">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5" /></svg>
                          </button>
@@ -340,6 +305,10 @@ export const AIChatbot: React.FC<Props> = ({
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
   const [notificationMsg, setNotificationMsg] = useState("");
+  
+  // Title Editing State
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
   
   // ... rest of state ...
   const [showPromptEditor, setShowPromptEditor] = useState(false);
@@ -716,7 +685,7 @@ export const AIChatbot: React.FC<Props> = ({
     setShowMobileSidebar(false);
     return newId;
   };
-  
+
   // ... Handlers (Regenerate, Edit, Delete, etc.) remain the same ...
   const handleRegenerate = async (index: number) => { if (!activeSessionId || isLoading) return; const currentMessages = sessions[activeSessionId].messages; const targetMsg = currentMessages[index]; let newHistory: Message[] = []; if (targetMsg.role === 'user') newHistory = currentMessages.slice(0, index + 1); else newHistory = currentMessages.slice(0, index); setSessions(prev => ({ ...prev, [activeSessionId]: { ...prev[activeSessionId], messages: newHistory } })); await runGeneration(activeSessionId, newHistory); };
   const handleEditMessage = (index: number, newText: string, shouldResend: boolean) => { if (!activeSessionId) return; const currentMsgs = sessions[activeSessionId].messages; const updatedMsgs = [...currentMsgs]; updatedMsgs[index] = { ...updatedMsgs[index], text: newText }; setSessions(prev => ({ ...prev, [activeSessionId]: { ...prev[activeSessionId], messages: updatedMsgs } })); if (shouldResend) { const truncatedHistory = updatedMsgs.slice(0, index + 1); setSessions(prev => ({ ...prev, [activeSessionId]: { ...prev[activeSessionId], messages: truncatedHistory } })); runGeneration(activeSessionId, truncatedHistory); } else { saveCurrentSessionToCloud(activeSessionId); } };
@@ -748,8 +717,28 @@ export const AIChatbot: React.FC<Props> = ({
       }; 
       setSessions(prev => ({ ...prev, [newSession.id]: newSession })); 
       setActiveSessionId(newSession.id); 
-      onUpdateMedicalRecord(record);
+      onUpdateMedicalRecord(record); 
       setShowCloudArchive(false); 
+  };
+  
+  const handleStartEditTitle = (session: Session) => {
+    setEditingSessionId(session.id);
+    setEditingTitle(session.title);
+  };
+  
+  const handleSaveTitle = () => {
+    if (!editingSessionId || !editingTitle.trim()) {
+        setEditingSessionId(null);
+        return;
+    }
+    setSessions(prev => {
+        const newSessions = { ...prev };
+        if (newSessions[editingSessionId]) {
+            newSessions[editingSessionId].title = editingTitle.trim();
+        }
+        return newSessions;
+    });
+    setEditingSessionId(null);
   };
   
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -775,9 +764,45 @@ export const AIChatbot: React.FC<Props> = ({
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
            {visibleSessions.map((session) => (
-               <div key={session.id} onClick={() => { setActiveSessionId(session.id); setShowMobileSidebar(false); }} className={`group flex items-center justify-between p-4 rounded-xl cursor-pointer transition-all border ${activeSessionId === session.id ? 'bg-white border-indigo-200 shadow-md' : 'hover:bg-white/80 border-transparent'}`}>
-                 <div className="flex items-center gap-3 overflow-hidden flex-1"><span className="text-xl">💬</span><div className="flex flex-col overflow-hidden"><span className="text-sm font-bold truncate">{session.title}</span><span className="text-[10px] opacity-60 font-medium">{new Date(session.createdAt).toLocaleTimeString()}</span></div></div>
-                 <button onClick={(e) => { e.stopPropagation(); deleteSession(session.id, e); }} disabled={isVisitorMode} className="w-6 h-6 rounded-full bg-white border flex items-center justify-center text-slate-400 hover:text-red-600 opacity-0 group-hover:opacity-100">✕</button>
+               <div 
+                 key={session.id} 
+                 onClick={() => { setActiveSessionId(session.id); setShowMobileSidebar(false); }} 
+                 onDoubleClick={() => handleStartEditTitle(session)}
+                 className={`group flex items-center justify-between p-4 rounded-xl cursor-pointer transition-all border ${activeSessionId === session.id ? 'bg-white border-indigo-200 shadow-md' : 'hover:bg-white/80 border-transparent'}`}>
+                 <div className="flex items-center gap-3 overflow-hidden flex-1">
+                    <span className="text-xl">💬</span>
+                    {editingSessionId === session.id ? (
+                        <input
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onBlur={handleSaveTitle}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveTitle();
+                                if (e.key === 'Escape') setEditingSessionId(null);
+                            }}
+                            className="text-sm font-bold bg-white border border-indigo-300 rounded-md px-2 py-1 w-full focus:ring-2 focus:ring-indigo-300 outline-none"
+                            autoFocus
+                        />
+                    ) : (
+                        <div className="flex flex-col overflow-hidden">
+                            <span className="text-sm font-bold truncate">{session.title}</span>
+                            <span className="text-[10px] opacity-60 font-medium">{new Date(session.createdAt).toLocaleTimeString()}</span>
+                        </div>
+                    )}
+                 </div>
+                 <div className="flex items-center">
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); handleStartEditTitle(session); }} 
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="重命名"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.5L14.732 3.732z" /></svg>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); deleteSession(session.id, e); }} disabled={isVisitorMode} className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity" title="删除">
+                      ✕
+                    </button>
+                 </div>
                </div>
              ))}
         </div>

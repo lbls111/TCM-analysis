@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { analyzePrescriptionWithAI, generateHerbDataWithAI, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION, QUICK_ANALYZE_SYSTEM_INSTRUCTION, createEmptyMedicalRecord, fetchAvailableModels } from './services/openaiService';
 import { calculatePrescription, getPTILabel } from './utils/tcmMath';
@@ -17,11 +18,6 @@ import { PatientManager } from './components/PatientManager';
 import { FULL_HERB_LIST, registerDynamicHerb, loadCustomHerbs } from './data/herbDatabase';
 import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VECTOR_API_KEY, VECTOR_API_URL, VISITOR_DEFAULT_CHAT_MODEL } from './constants';
 import { saveCloudReport, fetchCloudReports, deleteCloudReport, updateCloudHerb, saveCloudChatSession, fetchPatients } from './services/supabaseService';
-
-// Markdown Imports
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 
 // Logging Imports
 import { LogProvider, useLog } from './contexts/LogContext';
@@ -86,9 +82,6 @@ function LogicMasterApp() {
   
   // Custom Instruction for Report
   const [reportInstruction, setReportInstruction] = useState('');
-  
-  // Force Render State (Default to TRUE for better HTML rendering from AI)
-  const [forceRenderMode, setForceRenderMode] = useState(true);
   
   const [cloudReports, setCloudReports] = useState<CloudReport[]>([]);
   const [showReportHistory, setShowReportHistory] = useState(false);
@@ -1320,19 +1313,6 @@ function LogicMasterApp() {
                       </div>
 
                       <div className="flex gap-2 items-center flex-wrap justify-end w-full md:w-auto">
-                           {/* Force Render Toggle */}
-                           <button 
-                                onClick={() => setForceRenderMode(!forceRenderMode)}
-                                className={`text-xs font-bold px-3 py-2 rounded-lg border flex items-center gap-1 transition-all ${
-                                    forceRenderMode 
-                                    ? 'bg-amber-100 text-amber-800 border-amber-300 shadow-inner' 
-                                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                                }`}
-                                title="切换到原生HTML渲染模式 (用于修复复杂表格/布局显示问题)"
-                           >
-                               <span>{forceRenderMode ? '👁️ 强制渲染: ON' : '👁️ 强制渲染: OFF'}</span>
-                           </button>
-
                            {aiLoading ? (
                                 <button onClick={handleStopAI} className="text-xs font-bold text-red-600 bg-red-50 px-3 py-2 rounded-lg border border-red-100 hover:bg-red-100 flex items-center gap-1 animate-pulse">🛑 停止</button>
                             ) : (
@@ -1378,22 +1358,9 @@ function LogicMasterApp() {
                          <div className="flex flex-col gap-6">
                             {/* Rendering Logic: Use wrapper class for TCM Theme */}
                             <div className="tcm-report-content w-full overflow-hidden" onClick={handleReportClick}>
-                                {forceRenderMode ? (
-                                    <div 
-                                        dangerouslySetInnerHTML={{ __html: processReportContent(reports[activeReportVersion]) }}
-                                    />
-                                ) : (
-                                    <ReactMarkdown 
-                                        remarkPlugins={[remarkGfm]} 
-                                        rehypePlugins={[rehypeRaw]}
-                                        components={{
-                                            a: ({node, ...props}) => <a {...props} className="text-indigo-600 underline hover:text-indigo-800" />,
-                                            // Rely on CSS classes for tables, quotes etc defined in index.html tcm-report-content
-                                        }}
-                                    >
-                                        {processReportContent(reports[activeReportVersion])}
-                                    </ReactMarkdown>
-                                )}
+                                <div 
+                                    dangerouslySetInnerHTML={{ __html: processReportContent(reports[activeReportVersion]) }}
+                                />
                             </div>
 
                             {isReportIncomplete && (
