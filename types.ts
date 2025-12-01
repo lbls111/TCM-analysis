@@ -187,12 +187,23 @@ export interface BenCaoHerb {
 
 // === Cloud Storage Interfaces ===
 
+export interface Patient {
+  id: string;
+  name: string;
+  gender: string;
+  age: string;
+  medical_record: MedicalRecord; // JSONB
+  last_visit: string;
+  created_at: string;
+}
+
 export interface CloudReport {
   id: string;
   prescription: string; // 处方原文
   content: string; // HTML内容
   meta: any; // 版本、模式等元数据
   analysis_result?: any; // 关键计算结果快照
+  patient_id?: string; // NEW: Linked Patient
   created_at: string;
 }
 
@@ -202,6 +213,7 @@ export interface CloudChatSession {
   messages: any[]; // JSONB
   meta_info?: string; // Legacy: Raw text medical info
   medical_record?: MedicalRecord; // New: Structured medical record
+  patient_id?: string; // NEW: Linked Patient
   created_at: number; // Timestamp
   updated_at?: string; // ISO String from DB
 }

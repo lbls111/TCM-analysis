@@ -1,7 +1,7 @@
-// ... (Imports remain same)
+
 import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { generateChatStream, OpenAIMessage, OpenAIToolCall, summarizeMessages, createEmptyMedicalRecord, CHAT_SYSTEM_INSTRUCTION_BASE, createEmbedding } from '../services/openaiService';
-import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession, ViewMode, MedicalRecord, MedicalKnowledgeChunk, BenCaoHerb } from '../types';
+import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession, ViewMode, MedicalRecord, MedicalKnowledgeChunk, BenCaoHerb, Patient } from '../types';
 import { searchHerbsForAI, FULL_HERB_LIST, registerDynamicHerb } from '../data/herbDatabase';
 import { fetchCloudChatSessions, saveCloudChatSession, deleteCloudChatSession } from '../services/supabaseService';
 import { TokenCapsule } from './TokenCapsule';
@@ -11,7 +11,6 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 
-// ... (Interface definitions remain same)
 interface Message {
   role: 'user' | 'model' | 'tool' | 'system';
   text: string;
@@ -28,6 +27,7 @@ interface Session {
   messages: Message[];
   createdAt: number;
   medicalRecord?: MedicalRecord;
+  patientId?: string; // Add Patient ID support
 }
 
 interface Props {
@@ -43,9 +43,9 @@ interface Props {
   onUpdateHerb: (herb: Partial<BenCaoHerb>) => void; // New callback
   isVisitorMode: boolean;
   isAdminMode: boolean;
+  activePatient?: Patient | null; // NEW PROP
 }
 
-// ... (Subcomponents like NotificationBubble, ChatMessageItem remain same)
 const NotificationBubble = ({ message, visible }: { message: string, visible: boolean }) => {
     if (!visible) return null;
     return (
@@ -58,7 +58,6 @@ const NotificationBubble = ({ message, visible }: { message: string, visible: bo
     );
 };
 
-// ... CloudArchiveModal and FileUploadPreview remain same ...
 const CloudArchiveModal: React.FC<any> = ({ isOpen, onClose, sessions, onLoad, onDelete, isLoading, isVisitorMode }) => {
     if (!isOpen) return null;
     // Filter out medical record archives from the chat session list
@@ -130,7 +129,6 @@ const FileUploadPreview: React.FC<any> = ({ files, onRemove }) => {
     return (<div className="flex gap-2 p-3 overflow-x-auto border-t border-slate-200 bg-slate-100 rounded-t-xl mx-0">{files.map((f:any) => (<div key={f.id} className="relative group shrink-0 w-24 h-24 rounded-lg border border-slate-300 overflow-hidden bg-white shadow-sm">{f.type === 'image' ? <img src={f.content} className="w-full h-full object-cover" /> : <div className="w-full h-full flex flex-col items-center justify-center text-xs text-slate-600 p-2 bg-slate-50"><span className="text-2xl mb-1">📄</span><span className="truncate w-full text-center font-medium">{f.name}</span></div>}<button onClick={() => onRemove(f.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">✕</button></div>))}</div>);
 };
 
-// ... ChatMessageItem remains same ...
 interface ChatMessageItemProps {
     message: Message;
     index: number;
@@ -149,7 +147,8 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
     const [editValue, setEditValue] = useState(message.text);
     const [isHovering, setIsHovering] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
-    const [forceRender, setForceRender] = useState(false); // New state
+    // FORCE RENDER DEFAULT TRUE FOR CHATBOT TO MATCH REPORT STYLE
+    const [forceRender, setForceRender] = useState(true);
 
     if(message.role === 'tool') return null;
 
@@ -157,16 +156,17 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
       if (!text) return "";
       let cleanText = text;
       
-      // 1. UNWRAP CODE BLOCKS
-      cleanText = cleanText.replace(/```(?:html|xml|markdown)?\s*([\s\S]*?)```/gi, (match, content) => {
-          return content;
-      });
+      // 1. UNWRAP CODE BLOCKS - FIXED: Only unwrap HTML/XML
+      cleanText = cleanText.replace(/```(html|xml)\s*([\s\S]*?)```/gi, '$2');
 
       // 2. Strip HTML Document Wrapper Tags (html, head, body, doctype)
       cleanText = cleanText.replace(/<!DOCTYPE html>/gi, '');
       cleanText = cleanText.replace(/<\/?html[^>]*>/gi, '');
       cleanText = cleanText.replace(/<\/?head[^>]*>/gi, '');
       cleanText = cleanText.replace(/<\/?body[^>]*>/gi, '');
+      
+      // Remove styles to avoid conflicts (styles are now global)
+      cleanText = cleanText.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
 
       // 3. Fix Indentation logic for HTML tags
       cleanText = cleanText.replace(/^[ \t]+(<[a-zA-Z\/])/gm, '$1');
@@ -182,7 +182,6 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
       });
     };
     
-    // ... rest of ChatMessageItem ...
     const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
       if (target.matches('.herb-link') || target.closest('.herb-link')) {
@@ -245,7 +244,7 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                         // Render Logic Switch with TCM Theme Class applied
                         forceRender ? (
                             <div 
-                                className="tcm-report-content"
+                                className="tcm-report-content" // APPLY GLOBAL CSS CLASS HERE
                                 onClick={handleClick}
                                 dangerouslySetInnerHTML={{ __html: processMessageContent(message.text) }}
                             />
@@ -325,10 +324,11 @@ export const AIChatbot: React.FC<Props> = ({
   onUpdateMedicalRecord,
   onUpdateHerb,
   isVisitorMode,
-  isAdminMode
+  isAdminMode,
+  activePatient
 }) => {
   const { addLog } = useLog(); 
-  const LS_CHAT_SESSIONS_KEY = "logicmaster_chat_sessions";
+  const LS_CHAT_SESSIONS_KEY = activePatient ? `logicmaster_chat_sessions_${activePatient.id}` : "logicmaster_chat_sessions";
 
   const [sessions, setSessions] = useState<Record<string, Session>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -345,7 +345,6 @@ export const AIChatbot: React.FC<Props> = ({
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [customSystemPrompt, setCustomSystemPrompt] = useState(CHAT_SYSTEM_INSTRUCTION_BASE);
 
-  // ... (useEffects remain mostly same) ...
   // Cloud Sync & Archive
   const [isSyncing, setIsSyncing] = useState(false);
   const [showCloudArchive, setShowCloudArchive] = useState(false);
@@ -389,38 +388,43 @@ export const AIChatbot: React.FC<Props> = ({
       setTimeout(() => setShowNotification(false), 3000);
   };
   
-  // ... Session management logic ...
+  // Reset sessions when patient changes
   useEffect(() => {
-    const init = async () => {
+      setActiveSessionId(null);
+      setSessions({});
+      const init = async () => {
+         // Local Storage Logic
          const saved = localStorage.getItem(LS_CHAT_SESSIONS_KEY);
-         const lastId = localStorage.getItem('logicmaster_last_active_session');
+         const lastIdKey = activePatient ? `logicmaster_last_active_session_${activePatient.id}` : 'logicmaster_last_active_session';
+         const lastId = localStorage.getItem(lastIdKey);
          let loadedSessions = saved ? JSON.parse(saved) : {};
          
          if (Object.keys(loadedSessions).length > 0) {
              setSessions(loadedSessions);
              if (lastId && loadedSessions[lastId]) {
                  setActiveSessionId(lastId);
-                 if (loadedSessions[lastId].medicalRecord) {
-                    onUpdateMedicalRecord(loadedSessions[lastId].medicalRecord);
-                 }
              }
          } else {
+             // If no local, maybe try to load most recent cloud session?
+             // For now, simple logic: create new
              createNewSession();
          }
-    };
-    init();
-  }, [settings.supabaseKey, isVisitorMode]);
+      };
+      init();
+  }, [activePatient?.id]);
 
+  // ... Session management logic ...
   useEffect(() => {
     if (Object.keys(sessions).length > 0) {
       localStorage.setItem(LS_CHAT_SESSIONS_KEY, JSON.stringify(sessions));
     }
     if (activeSessionId) {
-      localStorage.setItem('logicmaster_last_active_session', activeSessionId);
+      const lastIdKey = activePatient ? `logicmaster_last_active_session_${activePatient.id}` : 'logicmaster_last_active_session';
+      localStorage.setItem(lastIdKey, activeSessionId);
       const msgs = sessions[activeSessionId]?.messages || [];
       setTokenCount(estimateTokens(msgs));
     }
-  }, [sessions, activeSessionId]);
+  }, [sessions, activeSessionId, activePatient]);
 
   useEffect(() => {
       // PREVENT SYNC IN VISITOR MODE
@@ -451,6 +455,7 @@ export const AIChatbot: React.FC<Props> = ({
               title: session.title,
               messages: session.messages,
               medical_record: explicitMedicalRecord || session.medicalRecord || medicalRecordRef.current,
+              patient_id: activePatient?.id, // LINK TO PATIENT
               created_at: session.createdAt
           }, settings);
           addLog('success', 'Chat', 'Session synced to cloud', { sessionId });
@@ -687,10 +692,27 @@ export const AIChatbot: React.FC<Props> = ({
 
   const createNewSession = () => {
     const newId = `session_${Date.now()}`;
-    const newSession: Session = { id: newId, title: "新的研讨", createdAt: Date.now(), messages: [{ role: 'model', text: '我是您的 AI 中医助手。请先在【电子病历】模块录入患者数据，或直接在此输入病情。' }], medicalRecord: createEmptyMedicalRecord() };
+    // If activePatient exists, inherit their medicalRecord. Else empty.
+    const initialRecord = activePatient && activePatient.medical_record 
+        ? activePatient.medical_record 
+        : createEmptyMedicalRecord();
+        
+    const newSession: Session = { 
+        id: newId, 
+        title: "新的研讨", 
+        createdAt: Date.now(), 
+        messages: [{ role: 'model', text: '我是您的 AI 中医助手。请先在【电子病历】模块录入患者数据，或直接在此输入病情。' }], 
+        medicalRecord: initialRecord,
+        patientId: activePatient?.id 
+    };
+    
     setSessions(prev => ({ ...prev, [newId]: newSession }));
     setActiveSessionId(newId);
-    onUpdateMedicalRecord(createEmptyMedicalRecord());
+    if (!activePatient) {
+        // Only reset global medical record if not using a patient profile
+        // Wait... actually App handles the global medicalRecord state switch.
+        // But for a new chat, we just ensure UI consistency
+    }
     setShowMobileSidebar(false);
     return newId;
   };
@@ -700,7 +722,18 @@ export const AIChatbot: React.FC<Props> = ({
   const handleEditMessage = (index: number, newText: string, shouldResend: boolean) => { if (!activeSessionId) return; const currentMsgs = sessions[activeSessionId].messages; const updatedMsgs = [...currentMsgs]; updatedMsgs[index] = { ...updatedMsgs[index], text: newText }; setSessions(prev => ({ ...prev, [activeSessionId]: { ...prev[activeSessionId], messages: updatedMsgs } })); if (shouldResend) { const truncatedHistory = updatedMsgs.slice(0, index + 1); setSessions(prev => ({ ...prev, [activeSessionId]: { ...prev[activeSessionId], messages: truncatedHistory } })); runGeneration(activeSessionId, truncatedHistory); } else { saveCurrentSessionToCloud(activeSessionId); } };
   const handleDeleteMessage = (index: number) => { if (!activeSessionId) return; setSessions(prev => { const sess = { ...prev[activeSessionId] }; sess.messages = sess.messages.filter((_, i) => i !== index); return { ...prev, [activeSessionId]: sess }; }); saveCurrentSessionToCloud(activeSessionId); };
   const handleManualSync = () => { if (activeSessionId) saveCurrentSessionToCloud(activeSessionId); };
-  const loadCloudArchive = async () => { setIsCloudArchiveLoading(true); try { const data = await fetchCloudChatSessions(settings); setCloudArchiveSessions(data); } finally { setIsCloudArchiveLoading(false); } };
+  
+  const loadCloudArchive = async () => { 
+      setIsCloudArchiveLoading(true); 
+      try { 
+          // FILTER BY ACTIVE PATIENT
+          const data = await fetchCloudChatSessions(settings, activePatient?.id); 
+          setCloudArchiveSessions(data); 
+      } finally { 
+          setIsCloudArchiveLoading(false); 
+      } 
+  };
+  
   const handleDeleteCloudSession = async (id: string) => { if (isVisitorMode) return; if (await deleteCloudChatSession(id, settings)) { setCloudArchiveSessions(prev => prev.filter(s => s.id !== id)); if (sessions[id]) { const newSessions = {...sessions}; delete newSessions[id]; setSessions(newSessions); if (activeSessionId === id) setActiveSessionId(null); } } };
   
   const handleLoadCloudSession = (cloudSession: CloudChatSession) => { 
@@ -710,7 +743,8 @@ export const AIChatbot: React.FC<Props> = ({
           title: cloudSession.title, 
           messages: cloudSession.messages, 
           createdAt: cloudSession.created_at, 
-          medicalRecord: record
+          medicalRecord: record,
+          patientId: cloudSession.patient_id
       }; 
       setSessions(prev => ({ ...prev, [newSession.id]: newSession })); 
       setActiveSessionId(newSession.id); 
@@ -765,7 +799,10 @@ export const AIChatbot: React.FC<Props> = ({
         <div className="h-16 border-b border-slate-100 flex items-center justify-between px-4 lg:px-6 bg-white/95 backdrop-blur z-20 shadow-sm shrink-0">
            <div className="flex items-center gap-3">
              <button className="md:hidden p-2 text-slate-500" onClick={() => setShowMobileSidebar(true)}>☰</button>
-             <div><h3 className="font-bold text-slate-800 text-lg">智能研讨</h3></div>
+             <div>
+                 <h3 className="font-bold text-slate-800 text-lg">智能研讨</h3>
+                 {activePatient && <p className="text-[10px] text-indigo-500 font-medium">当前患者: {activePatient.name}</p>}
+             </div>
            </div>
            
            <div className="flex items-center gap-2">

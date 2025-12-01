@@ -1,8 +1,9 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { analyzePrescriptionWithAI, generateHerbDataWithAI, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION, QUICK_ANALYZE_SYSTEM_INSTRUCTION, createEmptyMedicalRecord, fetchAvailableModels } from './services/openaiService';
 import { calculatePrescription, getPTILabel } from './utils/tcmMath';
 import { parsePrescription } from './utils/prescriptionParser';
-import { AnalysisResult, ViewMode, Constitution, AdministrationMode, BenCaoHerb, AISettings, CloudReport, UserMode, MedicalRecord, CloudChatSession } from './types';
+import { AnalysisResult, ViewMode, Constitution, AdministrationMode, BenCaoHerb, AISettings, CloudReport, UserMode, MedicalRecord, CloudChatSession, Patient } from './types';
 import { QiFlowVisualizer } from './components/QiFlowVisualizer';
 import BenCaoDatabase from './components/BenCaoDatabase';
 import { HerbDetailModal } from './components/HerbDetailModal';
@@ -12,9 +13,10 @@ import { AISettingsModal } from './components/AISettingsModal';
 import { ModeSelector } from './components/ModeSelector';
 import { PromptEditorModal } from './components/PromptEditorModal';
 import { MedicalRecordManager } from './components/MedicalRecordManager';
+import { PatientManager } from './components/PatientManager';
 import { FULL_HERB_LIST, registerDynamicHerb, loadCustomHerbs } from './data/herbDatabase';
 import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VECTOR_API_KEY, VECTOR_API_URL, VISITOR_DEFAULT_CHAT_MODEL } from './constants';
-import { saveCloudReport, fetchCloudReports, deleteCloudReport, updateCloudHerb, saveCloudChatSession } from './services/supabaseService';
+import { saveCloudReport, fetchCloudReports, deleteCloudReport, updateCloudHerb, saveCloudChatSession, fetchPatients } from './services/supabaseService';
 
 // Markdown Imports
 import ReactMarkdown from 'react-markdown';
@@ -66,6 +68,12 @@ function LogicMasterApp() {
   const [view, setView] = useState<ViewMode>(ViewMode.INPUT);
   const [input, setInput] = useState(PRESET_PRESCRIPTION);
   const [medicalRecord, setMedicalRecord] = useState<MedicalRecord>(createEmptyMedicalRecord());
+  const [activePatient, setActivePatient] = useState<Patient | null>(null);
+  const [showPatientManager, setShowPatientManager] = useState(false);
+  
+  // Home Page Patient Selection
+  const [recentPatients, setRecentPatients] = useState<Patient[]>([]);
+  const [isLoadingPatients, setIsLoadingPatients] = useState(false);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -76,8 +84,11 @@ function LogicMasterApp() {
   const [activeReportVersion, setActiveReportVersion] = useState<string>('V1');
   const [isReportIncomplete, setIsReportIncomplete] = useState(false);
   
-  // Force Render State
-  const [forceRenderMode, setForceRenderMode] = useState(false);
+  // Custom Instruction for Report
+  const [reportInstruction, setReportInstruction] = useState('');
+  
+  // Force Render State (Default to TRUE for better HTML rendering from AI)
+  const [forceRenderMode, setForceRenderMode] = useState(true);
   
   const [cloudReports, setCloudReports] = useState<CloudReport[]>([]);
   const [showReportHistory, setShowReportHistory] = useState(false);
@@ -154,6 +165,8 @@ function LogicMasterApp() {
     setCloudReports([]);
     // Reset medical record to empty structure
     setMedicalRecord(createEmptyMedicalRecord());
+    setActivePatient(null);
+    setRecentPatients([]);
   };
 
   const handleModeSelect = async (mode: UserMode) => {
@@ -167,25 +180,30 @@ function LogicMasterApp() {
             ...aiSettings,
             apiKey: adminKey,
         };
-        // Optimistically set key to state so it's ready immediately
         setAiSettings(newSettings);
         
+        // Auto-fetch patients for Home Screen
+        setIsLoadingPatients(true);
+        try {
+            const patients = await fetchPatients(newSettings);
+            setRecentPatients(patients);
+        } catch (e) {
+            console.error("Failed to load patients", e);
+        } finally {
+            setIsLoadingPatients(false);
+        }
+
         // Trigger auto-fetch for models
         try {
             addLog('info', 'Admin', 'Auto-fetching models with default admin key...');
-            // Note: We use the local variable `newSettings` because setAiSettings state update is async
             const models = await fetchAvailableModels(newSettings.apiBaseUrl, adminKey);
             if (models.length > 0) {
                  setAiSettings(prev => ({ 
                      ...prev, 
                      apiKey: adminKey, 
                      availableModels: models, 
-                     // Keep user preferred model if it exists, else default to gemini-2.5-pro or first available
                      model: prev.model || models[0]?.id 
                  }));
-                 addLog('success', 'Admin', `Fetched ${models.length} models.`);
-            } else {
-                 addLog('warning', 'Admin', 'Auto-fetch returned 0 models. Check API key or endpoint.');
             }
         } catch(e: any) {
             addLog('error', 'Admin', 'Failed to auto-fetch models', {error: e.message});
@@ -324,11 +342,10 @@ function LogicMasterApp() {
       if (!text) return "";
       let clean = text;
 
-      // 1. UNWRAP CODE BLOCKS: Replace the fence with the content, preserving surrounding markdown
-      clean = clean.replace(/```(?:html|xml|markdown)?\s*([\s\S]*?)```/gi, (match, content) => {
-          return content;
-      });
-
+      // 1. UNWRAP HTML CODE BLOCKS AGGRESSIVELY - FIXED Regex to be selective
+      // Only unwrap explicit HTML/XML blocks
+      clean = clean.replace(/```(html|xml)\s*([\s\S]*?)```/gi, '$2');
+      
       // 2. Strip HTML Document Wrapper Tags (Aggressive sanitization to prevent layout shift)
       // Remove any <html>, <head>, <body> tags entirely
       clean = clean.replace(/<!DOCTYPE html>/gi, '');
@@ -337,11 +354,12 @@ function LogicMasterApp() {
       clean = clean.replace(/<\/?html[^>]*>/gi, '');
       clean = clean.replace(/<\/?head[^>]*>/gi, '');
       clean = clean.replace(/<\/?body[^>]*>/gi, '');
+      
+      // Remove <style> tags if they exist (since we inject global styles now)
+      // to prevent conflicts or bad scoping
+      clean = clean.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
 
-      // 3. Fix Indentation logic for HTML tags
-      clean = clean.replace(/^[ \t]+(<[a-zA-Z\/])/gm, '$1');
-
-      // 4. Inject Herb Links
+      // 3. Inject Herb Links
       if (herbRegex) {
           // Guard against replacing inside HTML attributes
           return clean.replace(herbRegex, (match, p1, offset, string) => {
@@ -357,8 +375,14 @@ function LogicMasterApp() {
   useEffect(() => {
     if (view === ViewMode.REPORT && reports[activeReportVersion]) {
         const currentReport = reports[activeReportVersion];
-        const isComplete = currentReport.includes('<!-- DONE -->') || (currentReport.length > 50 && !aiLoading);
-        setIsReportIncomplete(!isComplete);
+        // CHECK FOR THE EXPLICIT DONE MARKER OR LENGTH HEURISTIC IF LOADING IS DONE
+        const isComplete = currentReport.includes('<!-- DONE -->');
+        // Only show continue button if NOT loading and NOT complete and has some content
+        if (!aiLoading && !isComplete && currentReport.length > 50) {
+            setIsReportIncomplete(true);
+        } else {
+            setIsReportIncomplete(false);
+        }
     } else {
         setIsReportIncomplete(false);
     }
@@ -368,16 +392,43 @@ function LogicMasterApp() {
   useEffect(() => {
       const loadHistory = async () => {
           if (activeAiSettings.supabaseKey) {
-             addLog('info', 'Cloud', 'Fetching report history');
-             const history = await fetchCloudReports(activeAiSettings);
+             addLog('info', 'Cloud', 'Fetching report history', { patientId: activePatient?.id });
+             const history = await fetchCloudReports(activeAiSettings, activePatient?.id);
              setCloudReports(history);
           }
       };
       // Only load if not already loaded to prevent spamming
-      if (view === ViewMode.REPORT && userMode !== UserMode.SELECT && cloudReports.length === 0) {
+      if (view === ViewMode.REPORT && userMode !== UserMode.SELECT) {
           loadHistory();
       }
-  }, [view, activeAiSettings]);
+  }, [view, activeAiSettings, activePatient]); // RELOAD on patient change
+
+  const handlePatientSelect = (patient: Patient | null) => {
+      setActivePatient(patient);
+      if (patient) {
+          // Load Patient Context
+          setMedicalRecord(patient.medical_record || createEmptyMedicalRecord());
+          addLog('info', 'Patient', `Switched to patient: ${patient.name}`);
+          // Clear current temporary state to ensure isolation
+          setReports({}); 
+          setCloudReports([]); // Will auto-refetch
+          setView(ViewMode.MEDICAL_RECORD); // Direct to record
+          setInput(''); // Clear input for safety
+      } else {
+          // Reset to generic state
+          setMedicalRecord(createEmptyMedicalRecord());
+          setReports({});
+          addLog('info', 'Patient', 'Switched to generic workspace');
+      }
+  };
+  
+  // Home Page Quick Select
+  const handleHomePatientSelect = (patient: Patient) => {
+      handlePatientSelect(patient);
+      // FIX: Stay on INPUT view so user can input prescription
+      setView(ViewMode.INPUT); 
+      addLog('info', 'Nav', 'Selected patient from Home, staying on Input view');
+  };
 
   const handleReportClick = (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
@@ -433,12 +484,13 @@ function LogicMasterApp() {
       
       if (isManual) setIsSavingCloud(true);
       
-      addLog('info', 'Cloud', `Uploading report version ${version}`, { mode, isManual });
+      addLog('info', 'Cloud', `Uploading report version ${version}`, { mode, isManual, patientId: activePatient?.id });
       const success = await saveCloudReport({
           prescription: input,
           content: htmlContent,
           meta: { version, mode, model: activeAiSettings.model || activeAiSettings.analysisModel },
-          analysis_result: { top3: analysis.top3, totalPTI: analysis.totalPTI }
+          analysis_result: { top3: analysis.top3, totalPTI: analysis.totalPTI },
+          patient_id: activePatient?.id
       }, activeAiSettings);
       
       if (isManual) {
@@ -448,12 +500,12 @@ function LogicMasterApp() {
               alert("☁️ 报告已成功保存至云端！\n您可以在“历史存档”中随时查看。");
           } else {
               addLog('error', 'Cloud', 'Report save failed');
-              alert("❌ 保存失败。\n请检查 Supabase 连接，或确认是否已运行数据库初始化 SQL (需包含 'reports' 表)。");
+              alert("❌ 保存失败。\n请检查 Supabase 连接，或确认是否已运行数据库初始化 SQL (需包含 'reports' 表及 'patient_id' 列)。");
           }
       }
       
       if (success) {
-          fetchCloudReports(activeAiSettings).then(setCloudReports);
+          fetchCloudReports(activeAiSettings, activePatient?.id).then(setCloudReports);
       }
   };
 
@@ -484,51 +536,52 @@ function LogicMasterApp() {
   };
 
   const handleSaveMedicalRecordToCloud = async () => {
-      if (isVisitorMode) {
-          alert("访客模式限制：无法保存到云端。请切换至管理员模式或配置私有数据库。");
-          return;
-      }
-      if (!activeAiSettings.supabaseKey) {
-          alert("保存失败：未配置云数据库。");
-          return;
-      }
-      
-      const recordId = `medical_record_master_${Date.now()}`;
-      let title = "电子病历存档";
-      if (medicalRecord.basicInfo.name) {
-          title += ` - ${medicalRecord.basicInfo.name}`;
-      }
-      const dateStr = new Date().toLocaleDateString();
-      title += ` (${dateStr})`;
-      if (medicalRecord.knowledgeChunks.length > 0) {
-          title += ` - ${medicalRecord.knowledgeChunks.length} 条知识`;
-      }
-      
-      addLog('info', 'Cloud', 'Saving Medical Record Archive...', { id: recordId, title });
-      
-      try {
-          const success = await saveCloudChatSession({
-              id: recordId,
-              title: title,
-              messages: [{
-                  role: 'system', 
-                  text: `[SYSTEM] 这是一个电子病历快照存档。包含 ${medicalRecord.knowledgeChunks.length} 条向量化知识片段。`
-              }],
-              medical_record: medicalRecord,
-              created_at: Date.now()
-          }, activeAiSettings);
-
-          if (success) {
-              addLog('success', 'Cloud', 'Medical record archive saved.');
-              alert("☁️ 病历数据已成功同步至云端！\n您可以在【历史档案】中查看、恢复或删除旧存档。");
-          } else {
-              throw new Error("Save returned false");
+      // Legacy or Non-Patient Mode: Use Chat Session Archive
+      if (!activePatient) {
+          if (isVisitorMode) {
+              alert("访客模式限制：无法保存到云端。请切换至管理员模式或配置私有数据库。");
+              return;
           }
-      } catch (e: any) {
-          addLog('error', 'Cloud', 'Save failed', { error: e.message });
-          alert(`保存失败: ${e.message}`);
-          throw e; 
+          if (!activeAiSettings.supabaseKey) {
+              alert("保存失败：未配置云数据库。");
+              return;
+          }
+          
+          const recordId = `medical_record_master_${Date.now()}`;
+          let title = "电子病历存档 (未关联患者)";
+          if (medicalRecord.basicInfo.name) {
+              title += ` - ${medicalRecord.basicInfo.name}`;
+          }
+          
+          addLog('info', 'Cloud', 'Saving Medical Record Archive (Standalone)...', { id: recordId, title });
+          
+          try {
+              const success = await saveCloudChatSession({
+                  id: recordId,
+                  title: title,
+                  messages: [{
+                      role: 'system', 
+                      text: `[SYSTEM] 这是一个电子病历快照存档。包含 ${medicalRecord.knowledgeChunks.length} 条向量化知识片段。`
+                  }],
+                  medical_record: medicalRecord,
+                  created_at: Date.now()
+              }, activeAiSettings);
+
+              if (success) {
+                  addLog('success', 'Cloud', 'Medical record archive saved.');
+                  alert("☁️ 病历数据已成功同步至云端！\n您可以在【历史档案】中查看。");
+              } else {
+                  throw new Error("Save returned false");
+              }
+          } catch (e: any) {
+              addLog('error', 'Cloud', 'Save failed', { error: e.message });
+              alert(`保存失败: ${e.message}`);
+          }
+          return;
       }
+
+      // ACTIVE PATIENT MODE
+      alert("在【患者管理】模式下，病历修改会自动保存到患者档案，无需手动归档。\n如需创建历史副本，请手动导出或截图。");
   };
 
   const handleAskAI = async (mode: 'deep' | 'quick' | 'regenerate', regenerateInstructions?: string) => {
@@ -551,6 +604,12 @@ function LogicMasterApp() {
     let versionToUse = activeReportVersion;
     let targetMode: ReportMode = 'deep';
     let sysPrompt = customReportPrompt;
+    
+    // Combine regenerateInstructions (from chat) with reportInstruction (from textbox)
+    let instructions = regenerateInstructions || "";
+    if (reportInstruction.trim()) {
+        instructions = instructions ? `${instructions}\n${reportInstruction}` : reportInstruction;
+    }
     
     if (mode === 'regenerate') {
         versionToUse = activeReportVersion;
@@ -583,7 +642,7 @@ function LogicMasterApp() {
         analysis,
         input,
         activeAiSettings,
-        regenerateInstructions,
+        instructions, // Passed here
         undefined,
         controller.signal,
         sysPrompt, 
@@ -596,7 +655,8 @@ function LogicMasterApp() {
         setReports(prev => ({ ...prev, [versionToUse]: htmlContent }));
       }
 
-      const isComplete = true; 
+      // Check final content for DONE marker
+      const isComplete = htmlContent.includes('<!-- DONE -->'); 
       setIsReportIncomplete(!isComplete);
       addLog('success', 'AI', 'Generation completed', { incomplete: !isComplete });
       handleAutoFit();
@@ -616,7 +676,8 @@ function LogicMasterApp() {
   };
 
   const handleContinueAI = async () => {
-    if (!analysis || !reports[activeReportVersion] || !isReportIncomplete || aiLoading) return;
+    // Only continue if we have a report and it's marked as incomplete (or manually forced)
+    if (!analysis || !reports[activeReportVersion] || aiLoading) return;
 
     setAiLoading(true);
     setAiError(null);
@@ -632,8 +693,8 @@ function LogicMasterApp() {
         analysis,
         input,
         activeAiSettings,
-        undefined,
-        partialReport,
+        "Please continue generating the report from where you left off. Ensure you close any open HTML tags.", // Explicit instruction
+        partialReport, // Pass existing content as context
         controller.signal,
         sysPrompt,
         medicalRecord
@@ -645,7 +706,7 @@ function LogicMasterApp() {
         setReports(prev => ({ ...prev, [activeReportVersion]: finalContent }));
       }
       
-      const isNowComplete = true; 
+      const isNowComplete = finalContent.includes('<!-- DONE -->'); 
       setIsReportIncomplete(!isNowComplete);
       addLog('success', 'AI', 'Continuation successful');
 
@@ -660,6 +721,7 @@ function LogicMasterApp() {
     }
   };
 
+  // ... (Rest of existing methods handleAutoFillHerb, handleUpdatePrescriptionFromChat etc. remain same) ...
   const handleAutoFillHerb = async (herbName: string) => {
      if (!activeAiSettings.apiKey) {
          alert("AI补全需要配置API Key。");
@@ -818,6 +880,7 @@ function LogicMasterApp() {
     return 'bg-emerald-100 text-emerald-700 border-emerald-200';
   };
 
+  // ... (renderCalculationTable and MobileBottomNav remain same) ...
   const renderCalculationTable = (targetAnalysis: AnalysisResult) => {
       if (!targetAnalysis) return null;
       return (
@@ -962,6 +1025,14 @@ function LogicMasterApp() {
           onSave={setAiSettings}
           isVisitorMode={isVisitorMode}
       />
+      
+      <PatientManager 
+          isOpen={showPatientManager}
+          onClose={() => setShowPatientManager(false)}
+          settings={activeAiSettings}
+          activePatient={activePatient}
+          onSelectPatient={handlePatientSelect}
+      />
 
       <LogViewer 
           isOpen={showLogViewer} 
@@ -976,7 +1047,7 @@ function LogicMasterApp() {
              >
                  <div className="flex justify-between items-center mb-6">
                      <h3 className="text-xl font-bold font-serif-sc text-slate-800 flex items-center gap-2">
-                        <span>☁️</span> 云端报告存档
+                        <span>☁️</span> 云端报告存档 {activePatient && `(${activePatient.name})`}
                      </h3>
                      <button onClick={() => setShowReportHistory(false)} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
                  </div>
@@ -1030,13 +1101,22 @@ function LogicMasterApp() {
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-600 to-indigo-700 text-white flex items-center justify-center font-bold shadow-lg shadow-indigo-200">L</div>
                 <span className="font-bold text-lg font-serif-sc text-slate-800 tracking-tight hidden md:inline">LogicMaster</span>
              </div>
-             {isVisitorMode ? (
-                <span className="text-base font-bold bg-amber-100 text-amber-800 px-4 py-2 rounded-full border border-amber-200 shadow-sm">
-                    访客模式
-                </span>
-             ) : (
-                <span className="text-base font-bold bg-indigo-100 text-indigo-800 px-4 py-2 rounded-full border border-indigo-200 shadow-sm">
-                    管理员
+             
+             {/* Patient Switcher */}
+             {isAdminMode && (
+                 <button 
+                     onClick={() => setShowPatientManager(true)}
+                     className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm font-bold transition-all shadow-sm ${activePatient ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-white'}`}
+                 >
+                     <span className="text-base">{activePatient ? '👤' : '👥'}</span>
+                     <span>{activePatient ? activePatient.name : '选择患者'}</span>
+                     <span className="text-[10px] opacity-50">▼</span>
+                 </button>
+             )}
+
+             {isVisitorMode && (
+                <span className="text-xs font-bold bg-amber-100 text-amber-800 px-3 py-1.5 rounded-full border border-amber-200 shadow-sm">
+                    访客
                 </span>
              )}
           </div>
@@ -1099,12 +1179,53 @@ function LogicMasterApp() {
       <main className={`flex-1 overflow-hidden relative ${view === ViewMode.INPUT ? 'flex items-center justify-center p-6' : 'w-full'}`}>
         
         {view === ViewMode.INPUT && (
-          <div className="w-full max-w-3xl animate-in zoom-in-95 duration-500 overflow-y-auto max-h-full p-4">
+          <div className="w-full max-w-3xl animate-in zoom-in-95 duration-500 overflow-y-auto max-h-full p-4 custom-scrollbar">
              <div className="text-center mb-8 md:mb-12">
                 <div className="w-20 h-20 md:w-24 md:h-24 mx-auto bg-gradient-to-br from-white to-slate-50 rounded-3xl shadow-xl shadow-indigo-100/50 flex items-center justify-center text-4xl md:text-5xl mb-6 ring-1 ring-slate-100 text-indigo-600 transform hover:scale-105 transition-transform duration-500">💊</div>
                 <h1 className="text-3xl md:text-6xl font-black font-serif-sc text-slate-900 mb-4 tracking-tight">LogicMaster <span className="text-indigo-600">TCM</span></h1>
                 <p className="text-slate-500 text-base md:text-xl font-medium">通用中医计算引擎 · 经方/时方/三焦动力学仿真</p>
+                {activePatient && (
+                    <div className="mt-4 bg-indigo-50 text-indigo-700 px-4 py-2 rounded-full inline-block font-bold border border-indigo-100 animate-in fade-in">
+                        正在为 {activePatient.name} 进行推演
+                    </div>
+                )}
              </div>
+             
+             {/* Admin: Recent Patient Selection */}
+             {isAdminMode && !activePatient && (
+                 <div className="mb-6 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                     <div className="flex justify-between items-center mb-3">
+                         <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                             <span>👤</span> 快速选择患者
+                         </h3>
+                         <button onClick={() => setShowPatientManager(true)} className="text-xs text-indigo-600 font-bold hover:underline">管理全部</button>
+                     </div>
+                     {isLoadingPatients ? (
+                         <div className="text-xs text-slate-400 py-2">加载中...</div>
+                     ) : recentPatients.length > 0 ? (
+                         <div className="flex gap-3 overflow-x-auto pb-2 custom-scrollbar">
+                             {recentPatients.slice(0, 5).map(p => (
+                                 <button 
+                                     key={p.id}
+                                     onClick={() => handleHomePatientSelect(p)}
+                                     className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-100 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 transition-colors group"
+                                 >
+                                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${p.gender === '女' ? 'bg-rose-100 text-rose-500' : 'bg-blue-100 text-blue-500'}`}>
+                                         {p.name[0]}
+                                     </div>
+                                     <div className="text-left">
+                                         <div className="text-sm font-bold text-slate-800">{p.name}</div>
+                                         <div className="text-[10px] text-slate-400 group-hover:text-indigo-400">{p.age}岁</div>
+                                     </div>
+                                 </button>
+                             ))}
+                         </div>
+                     ) : (
+                         <div className="text-xs text-slate-400 py-2 text-center bg-slate-50 rounded-lg">暂无患者记录，请点击上方按钮新建</div>
+                     )}
+                 </div>
+             )}
+
              <div className="bg-white p-3 rounded-[2rem] md:rounded-[2.5rem] shadow-2xl shadow-indigo-200/40 border border-slate-100 relative overflow-hidden group">
                 <textarea value={input} onChange={e => setInput(e.target.value)} className="w-full h-40 md:h-48 bg-slate-50 rounded-[1.5rem] md:rounded-[2rem] p-6 md:p-8 text-lg md:text-2xl text-slate-800 placeholder-slate-300 border-transparent focus:bg-white focus:ring-0 transition-all resize-none font-serif-sc outline-none" placeholder="在此输入处方..." />
                 <div className="p-2 flex gap-3"><button onClick={handleStartCalculation} className="flex-1 bg-slate-900 text-white text-lg md:text-xl font-bold py-4 md:py-5 rounded-[1.5rem] md:rounded-[1.8rem] shadow-xl hover:bg-indigo-900 hover:shadow-2xl hover:-translate-y-0.5 transition-all flex items-center justify-center gap-3"><span>🚀</span> 开始演算</button></div>
@@ -1159,6 +1280,7 @@ function LogicMasterApp() {
                     onSaveToCloud={handleSaveMedicalRecordToCloud}
                     isAdminMode={isAdminMode}
                     settings={activeAiSettings} // Pass settings for fetching history
+                    activePatient={activePatient} // Pass active patient
                 />
              </div>
         </div>
@@ -1276,17 +1398,31 @@ function LogicMasterApp() {
 
                             {isReportIncomplete && (
                                 <div className="mt-4 text-center animate-in fade-in">
-                                    <button onClick={handleContinueAI} disabled={aiLoading} className="text-base font-bold text-white bg-amber-500 px-8 py-4 rounded-xl border border-amber-600 hover:bg-amber-600 flex items-center justify-center gap-2 shadow-lg mx-auto disabled:bg-amber-400">
-                                       {aiLoading ? <span>正在续写...</span> : <span>继续生成报告</span>}
+                                    <p className="text-xs text-amber-600 mb-2 font-bold">⚠️ 检测到报告可能未生成完整 (AI Token 截断)</p>
+                                    <button onClick={handleContinueAI} disabled={aiLoading} className="text-base font-bold text-white bg-amber-500 px-8 py-4 rounded-xl border border-amber-600 hover:bg-amber-600 flex items-center justify-center gap-2 shadow-lg mx-auto disabled:bg-amber-400 transition-all active:scale-95">
+                                       {aiLoading ? <span className="animate-spin">⏳</span> : <span>⤵️ 从截断处继续生成</span>}
                                     </button>
                                 </div>
                             )}
                          </div>
                       ) : (
-                         <div className="h-full flex flex-col items-center justify-center text-center py-24 text-slate-400">
+                         <div className="h-full flex flex-col items-center justify-center text-center py-10 text-slate-400">
                             {analysis ? (
-                                <div className="max-w-md mx-auto">
-                                    <h3 className="text-2xl font-black text-slate-800 font-serif-sc mb-4">选择报告类型</h3>
+                                <div className="max-w-md mx-auto w-full">
+                                    <h3 className="text-2xl font-black text-slate-800 font-serif-sc mb-4">生成分析报告</h3>
+                                    
+                                    {/* Report Instruction Input */}
+                                    <div className="mb-6 text-left">
+                                        <label className="block text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">补充指令 (可选)</label>
+                                        <textarea 
+                                            value={reportInstruction}
+                                            onChange={e => setReportInstruction(e.target.value)}
+                                            placeholder="例如：请侧重分析脾胃虚寒的问题，使用通俗易懂的语言..."
+                                            className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none font-medium text-slate-700"
+                                            rows={3}
+                                        />
+                                    </div>
+
                                     <div className="flex flex-col gap-4">
                                         <button onClick={() => handleAskAI('deep')} className="w-full p-4 bg-indigo-600 text-white rounded-2xl shadow-lg hover:bg-indigo-700 hover:-translate-y-0.5 transition-all flex items-center justify-between group">
                                             <div className="flex items-center gap-4"><span className="text-2xl">🧠</span><div className="text-left"><div className="font-bold">生成深度推演报告</div></div></div><span className="opacity-0 group-hover:opacity-100 transition-opacity">→</span>
@@ -1321,6 +1457,7 @@ function LogicMasterApp() {
                         onUpdateHerb={handleUpdateHerbFromChat} // Pass the new handler
                         isVisitorMode={isVisitorMode}
                         isAdminMode={isAdminMode}
+                        activePatient={activePatient}
                      />
                  )}
              </div>

@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { MedicalRecord, AISettings, MedicalKnowledgeChunk, CloudChatSession } from '../types';
+import { MedicalRecord, AISettings, MedicalKnowledgeChunk, CloudChatSession, Patient } from '../types';
 import { createEmbedding, createEmptyMedicalRecord } from '../services/openaiService';
-import { fetchCloudChatSessions, deleteCloudChatSession } from '../services/supabaseService';
+import { fetchCloudChatSessions, deleteCloudChatSession, upsertPatient } from '../services/supabaseService';
 
 interface Props {
   record: MedicalRecord;
@@ -10,6 +10,7 @@ interface Props {
   onSaveToCloud?: () => Promise<void>;
   isAdminMode?: boolean;
   settings: AISettings;
+  activePatient?: Patient | null;
 }
 
 const LS_DRAFT_KEY = "logicmaster_medical_input_draft";
@@ -203,7 +204,7 @@ const MedicalHistoryModal: React.FC<{
     );
 };
 
-export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSaveToCloud, isAdminMode, settings }) => {
+export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSaveToCloud, isAdminMode, settings, activePatient }) => {
   const [rawInput, setRawInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, stage: '' });
@@ -211,6 +212,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   const [isListCollapsed, setIsListCollapsed] = useState(true);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showSchemaError, setShowSchemaError] = useState(false);
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
   
   // Edit Mode State
   const [editingChunkId, setEditingChunkId] = useState<string | null>(null);
@@ -234,6 +236,28 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   useEffect(() => {
       logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
+
+  // AUTO-SAVE to Patient Profile
+  useEffect(() => {
+    if (activePatient && record && settings.supabaseKey) {
+        // Debounce auto-save
+        const timer = setTimeout(async () => {
+            setIsAutoSaving(true);
+            try {
+                await upsertPatient({
+                    ...activePatient,
+                    medical_record: record
+                }, settings);
+                // Silent success
+            } catch (e) {
+                console.error("Auto-save failed", e);
+            } finally {
+                setIsAutoSaving(false);
+            }
+        }, 3000);
+        return () => clearTimeout(timer);
+    }
+  }, [record, activePatient]);
 
   const addLog = (msg: string) => {
       setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -452,7 +476,6 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   const chunks = record.knowledgeChunks || [];
   const displayChunks = isListCollapsed ? chunks.slice(0, 5) : chunks;
 
-  // ... (JSX render structure remains largely the same) ...
   return (
     <div className="h-full w-full flex flex-col md:flex-row gap-6 p-4 overflow-hidden relative">
       {showSchemaError && <SchemaErrorAlert onClose={() => setShowSchemaError(false)} />}
@@ -473,13 +496,15 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
               <div>
                   <h2 className="text-xl font-black font-serif-sc text-slate-800 flex items-center gap-2">
                     <span>📚</span> 病历知识库 (RAG Knowledge Base)
+                    {activePatient && <span className="text-xs font-sans font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">{activePatient.name}</span>}
                   </h2>
-                  <p className="text-xs text-slate-500 mt-1">
+                  <p className="text-xs text-slate-500 mt-1 flex items-center gap-2">
                       共收录 <span className="font-bold">{chunks.length}</span> 条知识片段
+                      {isAutoSaving && <span className="text-indigo-500 animate-pulse">☁️ 同步中...</span>}
                   </p>
               </div>
               <div className="flex gap-2">
-                  {isAdminMode && (
+                  {isAdminMode && !activePatient && (
                       <>
                         <button 
                             onClick={handleSyncToCloud}
@@ -494,6 +519,11 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                             <span>📂</span> 历史档案
                         </button>
                       </>
+                  )}
+                  {activePatient && (
+                      <span className="text-[10px] text-slate-400 self-center mr-2">
+                          所有修改将自动保存到患者档案
+                      </span>
                   )}
                   <button 
                     onClick={() => { if(window.confirm('确定清空所有知识库吗？')) onUpdate({...record, knowledgeChunks: []}); }}

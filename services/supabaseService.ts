@@ -1,6 +1,7 @@
+
 // ... (Imports and client setup remain same)
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { AISettings, BenCaoHerb, CloudReport, CloudChatSession } from '../types';
+import { AISettings, BenCaoHerb, CloudReport, CloudChatSession, Patient } from '../types';
 
 let supabase: SupabaseClient | null = null;
 let currentSettings: { url: string; key: string } | null = null;
@@ -211,19 +212,103 @@ export const bulkUpsertHerbs = async (herbs: BenCaoHerb[], settings: AISettings)
 
 
 // ==========================================
+// Patient Management (NEW)
+// ==========================================
+
+export const fetchPatients = async (settings: AISettings): Promise<Patient[]> => {
+    const client = getSupabaseClient(settings);
+    if (!client) return [];
+
+    try {
+        const { data, error } = await client
+            .from('patients')
+            .select('*')
+            .order('last_visit', { ascending: false });
+
+        if (error) {
+            console.warn("[Supabase] fetchPatients error:", error.message);
+            // Don't throw for missing table, return empty to trigger UI prompt
+            return [];
+        }
+        return data as Patient[];
+    } catch (e) {
+        handleNetworkError("fetchPatients", e);
+        return [];
+    }
+};
+
+export const upsertPatient = async (patient: Partial<Patient>, settings: AISettings): Promise<Patient | null> => {
+    const client = getSupabaseClient(settings);
+    if (!client) return null;
+
+    try {
+        // Prepare payload, strip ID if undefined to let DB generate UUID if it's new
+        const payload: any = {
+            name: patient.name,
+            gender: patient.gender,
+            age: patient.age,
+            medical_record: patient.medical_record,
+            last_visit: new Date().toISOString()
+        };
+        if (patient.id) payload.id = patient.id;
+
+        const { data, error } = await client
+            .from('patients')
+            .upsert(payload)
+            .select()
+            .single();
+
+        if (error) {
+            console.error("[Supabase] upsertPatient error:", error.message);
+            if (error.message.includes('Could not find the table')) {
+                throw new Error("SCHEMA_ERROR: 'patients' table missing.");
+            }
+            return null;
+        }
+        return data as Patient;
+    } catch (e) {
+        handleNetworkError("upsertPatient", e);
+        throw e;
+    }
+};
+
+export const deletePatient = async (id: string, settings: AISettings): Promise<boolean> => {
+    const client = getSupabaseClient(settings);
+    if (!client) return false;
+
+    try {
+        const { error } = await client.from('patients').delete().eq('id', id);
+        return !error;
+    } catch (e) {
+        handleNetworkError("deletePatient", e);
+        return false;
+    }
+};
+
+
+// ==========================================
 // AI Reports
 // ==========================================
 
-export const fetchCloudReports = async (settings: AISettings): Promise<CloudReport[]> => {
+export const fetchCloudReports = async (settings: AISettings, patientId?: string): Promise<CloudReport[]> => {
     const client = getSupabaseClient(settings);
     if (!client) return [];
   
     try {
-      const { data, error } = await client
+      let query = client
         .from('reports')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50); // Limit to recent 50
+        .order('created_at', { ascending: false });
+      
+      // Filter by patient ID if provided
+      if (patientId) {
+          query = query.eq('patient_id', patientId);
+      } else {
+          // If no patient selected (admin view all or legacy), limit to recent
+          query = query.limit(50);
+      }
+
+      const { data, error } = await query;
   
       if (error) {
         if (!error.message.includes('Could not find the table')) {
@@ -256,12 +341,19 @@ export const saveCloudReport = async (report: Omit<CloudReport, 'id' | 'created_
                  console.warn("[Supabase] saveCloudReport: Network request failed.");
                  return false;
             }
+            // Check for missing column error
+            if (error.message.includes('patient_id')) {
+                console.error("CRITICAL: patient_id column missing in reports table.");
+                throw new Error("SCHEMA_ERROR: Missing 'patient_id' column in 'reports'.");
+            }
+
             console.error("Error saving report:", error.message);
             return false;
         }
         return true;
     } catch (e) {
         handleNetworkError("saveCloudReport", e);
+        if (String(e).includes("SCHEMA_ERROR")) throw e;
         return false;
     }
 };
@@ -284,15 +376,21 @@ export const deleteCloudReport = async (id: string, settings: AISettings): Promi
 // Chat Sessions
 // ==========================================
 
-export const fetchCloudChatSessions = async (settings: AISettings): Promise<CloudChatSession[]> => {
+export const fetchCloudChatSessions = async (settings: AISettings, patientId?: string): Promise<CloudChatSession[]> => {
     const client = getSupabaseClient(settings);
     if (!client) return [];
   
     try {
-      const { data, error } = await client
+      let query = client
         .from('chat_sessions')
         .select('*')
         .order('created_at', { ascending: false });
+
+      if (patientId) {
+          query = query.eq('patient_id', patientId);
+      }
+  
+      const { data, error } = await query;
   
       if (error) {
         if (!error.message.includes('Could not find the table')) {
@@ -316,7 +414,7 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
     if (!client) return false;
 
     try {
-        const payload = {
+        const payload: any = {
             id: session.id,
             title: session.title,
             messages: session.messages,
@@ -325,6 +423,10 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
             created_at: session.created_at,
             updated_at: new Date().toISOString()
         };
+        
+        if (session.patient_id) {
+            payload.patient_id = session.patient_id;
+        }
 
         const { error } = await client
             .from('chat_sessions')
@@ -341,11 +443,12 @@ export const saveCloudChatSession = async (session: CloudChatSession, settings: 
             if (
                 msg.includes('medical_record') || 
                 msg.includes('updated_at') || 
+                msg.includes('patient_id') ||
                 msg.includes('Could not find the') || 
                 error.code === '42703'
             ) {
                 console.error("CRITICAL SCHEMA ERROR: Columns missing in chat_sessions.");
-                throw new Error("SCHEMA_ERROR: Database columns missing (medical_record or updated_at)");
+                throw new Error("SCHEMA_ERROR: Database columns missing (medical_record, patient_id or updated_at)");
             }
             
             console.error("Error saving chat session:", error.message);

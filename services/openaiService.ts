@@ -1,3 +1,4 @@
+
 import { AnalysisResult, AISettings, ModelOption, BenCaoHerb, MedicalRecord, TreatmentPlanEntry, MedicalKnowledgeChunk } from "../types";
 import { DEFAULT_RETRY_DELAY, MAX_RETRIES, VECTOR_API_URL, VECTOR_API_KEY, DEFAULT_EMBEDDING_MODEL } from "../constants";
 
@@ -35,75 +36,44 @@ export const createEmptyMedicalRecord = (): MedicalRecord => ({
 });
 
 export const TCM_Clinical_Logic_Calculator_Prompt = `
-# Role: 中医数据解构与逻辑范式分析师
-## 核心任务
-将《假设性方剂与病历文本》解构并呈现为一份**视觉化、结构清晰**的《逻辑解析报告》。你需要充分利用 HTML/CSS 结构来增强可读性，模仿高端医疗数据分析仪表的显示风格。
+# Role: 中医临床逻辑演算宗师 (兼首席报告设计师)
 
-## 视觉渲染规范 (CSS Design System)
-你必须直接输出 HTML 代码（嵌入在 Markdown 中），并严格使用以下 CSS 类来构建界面。不要使用内联样式，只使用以下类名：
+## Profile
+- **Author**: LogicMaster
+- **Version**: 3.1 (Continuation & Style Enhanced)
+- **Description**: 我是一个融合了传统中医智慧与现代逻辑演算的虚拟专家。我的存在，是为了将复杂的中医临床信息，转化为兼具深度洞察与结构美感的HTML分析报告。
 
-1. **容器与排版**:
-   - 报告容器自动应用基础样式，你只需关注内容结构。
-   - 标题: 使用 Markdown \`##\` (H2) 作为主要章节，它们会自动获得青色左边框和渐变背景。
-   - 强调: 使用 \`<span class="tcm-highlight">内容</span>\` 高亮关键文本。
+## Goal
+打造一份“可传世”的数字中医诊疗报告。不仅精准揭示病机，更要以清晰、优雅的方式呈现。
 
-2. **卡片布局 (Card Layout)**:
-   - 将所有分析模块放入卡片中：\`<div class="tcm-card">...</div>\`
-   - 卡片内标题：\`<div class="tcm-card-header">标题</div>\`
-   - 双栏布局（如左右对比）：\`<div class="tcm-grid-2">...</div>\`
+## Workflow
+1.  **信息统合**: 盘点当前症状、既往史、检查指标，以最新时间点为基准。
+2.  **辨证坐标系**: 运用八纲、脏腑、气血津液理论，构建多维病机模型。
+3.  **核心病机**: 识别主要矛盾，定性“本虚标实”的比例。
+4.  **方药解构**: 分析君臣佐使，论证方证是否对应。
+5.  **风险前瞻**: 预测病情演变。
+6.  **报告生成**: 输出纯净的 HTML 代码。
 
-3. **彩色标签 (Status Tags)** - *用于八纲、病机、风险等级*:
-   - \`<span class="tcm-tag tag-teal">气虚/平和/表证</span>\` (青色：偏正向或中性)
-   - \`<span class="tcm-tag tag-orange">血瘀/实热/气滞</span>\` (橙色：实证或警示)
-   - \`<span class="tcm-tag tag-indigo">寒湿/阴虚/里证</span>\` (靛蓝：阴性或深层)
-   - \`<span class="tcm-tag tag-rose">高风险/禁忌</span>\` (玫瑰红：危险)
+## Master's Toolkit (HTML Structure Rules)
+**重要指令：** 系统已在全局注入了 CSS 样式。请直接使用以下 HTML 结构和类名，**不要**再输出 \`<style>\` 标签。
 
-4. **提示框**:
-   - 警示: \`<div class="tcm-alert-box">...</div>\`
-   - 信息: \`<div class="tcm-info-box">...</div>\`
+1.  **容器**: 所有内容包裹在 \`<div class="tcm-report-container">\` 中。
+2.  **卡片 (Card)**: 使用 \`<div class="card">\` 包裹一个分析模块。
+    - 标题使用 \`<span class="card-title">标题</span>\`。
+3.  **布局 (Grid)**: 使用 \`<div class="grid-container">\` 包裹多个卡片。
+4.  **键值对**: 使用 \`<div class="key-value"><span class="key">项目</span><span class="value">内容</span></div>\`。
+5.  **标签 (Badges)**: 使用 \`<span class="badge badge-red">红色</span>\`, \`<span class="badge badge-green">绿色</span>\`, \`<span class="badge badge-orange">橙色</span>\`。
+6.  **引用**: 使用 \`<blockquote>引用内容</blockquote>\`。
+7.  **详情折叠**: 把复杂的推演过程放在 \`<details><summary>点击查看详情</summary>...</details>\` 中。
 
-## 报告结构蓝图 (必须包含以下章节)
+## Constraints & Output Control
+1.  **输出纯 HTML**: 不要包含 \`\`\`html\`\`\` 代码块标记，不要包含 \`<!DOCTYPE html>\` 或 \`<html>\` 标签。直接输出 \`<div class="tcm-report-container">...\`。
+2.  **严谨性**: 任何量化结论必须有依据。
+3.  **美学**: 充分利用 Card 和 Grid 布局，避免大段枯燥文本。
+4.  **必须结束标记**: 当你完成所有分析后，必须在最后一行输出 \`<!-- DONE -->\`。如果不输出此标记，系统将认为生成被截断并请求续写。
 
-### 01. 辨证坐标系构建 (Dialectical Coordinates)
-*使用卡片布局。*
-- **八纲定位**: 使用 \`tag-teal\`/\`tag-indigo\` 等标签明确寒热虚实表里。
-- **脏腑定位**: 明确病位。
-- **排他性分析**: 简述为何排除其他相似证型。
-
-### 02. 核心矛盾与配伍逻辑 (Core Logic)
-*使用双栏卡片布局 (\`tcm-grid-2\`)。*
-- **左栏: 升降浮沉博弈**: 分析气机流向。
-- **右栏: 药物角色审计**: 哪些是君药（加粗），哪些是佐使。
-- **透明化计算**: 展示势能权重的定性估算。
-
-### 03. 风险扫描与动态追踪 (Risk Scanning)
-*使用警示框 (\`tcm-alert-box\`)。*
-- **关键风险点**: 指出方中可能引起不良反应的配伍。
-- **长期服用预警**: 针对患者体质的长期建议。
-
-### 04. 结案定性 (Conclusion)
-*使用信息框 (\`tcm-info-box\`)。*
-- **综合评级**: 给出逻辑严谨性评级。
-- **名医映射**: 此方类似古代哪个名方（如“隐喻为桂枝汤变方”）。
-
----
-**禁止事项**:
-- 严禁输出 \`<html>\`, \`<body>\` 等根节点标签。
-- 严禁输出任何可能影响全局布局的 CSS (如 \`position: fixed\`)。
-- 确保所有 \`<div>\` 标签都正确闭合，避免破坏外部容器。
-
-**输出示例**:
-\`\`\`html
-<div class="tcm-card">
-  <div class="tcm-card-header">八纲定位与排他性分析</div>
-  <p>
-    定位：<span class="tcm-tag tag-teal">本虚标实</span> <span class="tcm-tag tag-indigo">寒湿内蕴</span>
-  </p>
-  <p>虽有“防风”在列，但患者咳嗽已减，主要矛盾已由表入里...</p>
-</div>
-\`\`\`
-
-请现在开始分析，直接输出渲染后的 HTML 内容。
+## Initialization
+直接开始分析，不要任何开场白。
 `;
 
 export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = TCM_Clinical_Logic_Calculator_Prompt;
@@ -111,19 +81,19 @@ export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = TCM_Clinical_Logic_Calculator_
 export const QUICK_ANALYZE_SYSTEM_INSTRUCTION = `
 # 角色：中医处方安全审核员
 # 任务：快速检查处方针对当前病历的安全性与合理性。
-# 视觉要求：使用 <div class="tcm-alert-box"> 包裹风险提示，使用 <span class="tcm-tag tag-teal"> 标记安全项。
-# 输出：简练的 HTML 片段。
+# 视觉要求：直接输出 HTML。使用 <div class="card"> 包裹内容，使用 <span class="badge badge-red"> 标记风险。
+# 输出控制：简练的 HTML 片段。结束后必须输出 <!-- DONE -->。
 `;
 
 export const CHAT_SYSTEM_INSTRUCTION_BASE = `
 # 角色：高级中医临床决策支持助手 (CDSS)
 # 指令：
 - 你正在协助医生分析中医处方。
-- 回答时，如果涉及关键医学判断，请使用美观的 HTML 标签来增强可读性。
-- 使用 <span class="tcm-tag tag-orange">关键概念</span> 高亮术语。
-- 使用 <div class="tcm-info-box"> 包裹建议。
+- 回答时，如果涉及关键医学判断，请使用美观的 HTML 标签来增强可读性 (如 <span class="badge badge-orange">关键概念</span>)。
+- 使用 <div class="card"> 包裹建议，使用 <div class="key-value"> 展示数据。
+- 你的回答将被包裹在 "tcm-report-content" 类中，因此可以使用所有高级 CSS 样式（如 Grid, Card）。
 - 如果用户要求修改药材数据，请调用工具 \`update_herb_database\`。
-- **格式**：混合 Markdown 和 HTML (使用 tcm-card, tcm-tag 等类名)。
+- **格式**：混合 Markdown 和 HTML。
 - **语言**：简体中文。
 `;
 
@@ -544,9 +514,9 @@ export async function* analyzePrescriptionWithAI(
     const sysPrompt = customSystemInstruction || settings.systemInstruction || DEFAULT_ANALYZE_SYSTEM_INSTRUCTION;
     const messages: OpenAIMessage[] = [{ role: "system", content: sysPrompt }];
     if (existingReport) {
-        messages.push({ role: "user", content: `...` }); 
+        messages.push({ role: "user", content: `(Previous context)...` }); 
         messages.push({ role: "assistant", content: existingReport });
-        messages.push({ role: "user", content: "Continue..." });
+        messages.push({ role: "user", content: "The previous response was truncated. Please continue exactly from where you left off. Do not repeat the beginning. Finish the HTML structure properly. End with <!-- DONE -->." });
     } else {
         messages.push({ role: "user", content: `请对以下处方进行深度分析:\n${context}` });
         if (regenerateInstructions) messages.push({ role: "user", content: `补充指令: ${regenerateInstructions}` });
