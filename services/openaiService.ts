@@ -35,7 +35,7 @@ export const createEmptyMedicalRecord = (): MedicalRecord => ({
   diagnosis: { tcm: '', western: '', treatmentPlans: [] },
 });
 
-export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = `你# Role: 中医临床逻辑演算宗师 (兼首席报告设计师)
+export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = `# Role: 中医临床逻辑演算宗师 (兼首席报告设计师)
 
 ## Profile
 - **Author**: Your Name/Organization
@@ -74,7 +74,7 @@ export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = `你# Role: 中医临床逻辑
 当我接收到任务后，将严格按照以下步骤，在内心完成思考与构建，并最终输出报告：
 
 ### 信息统合与时空锚定**
-    -   全面扫描用户提供的所有信息，根据当前【已知信息】时间基准，盘点当前最新方案作为基准，整理出清单，区分当前症状、既往症状与相关检查指标。
+    -   全面扫描用户提供的所有信息，根据当前【已知信息】最新时间基准，盘点当前最新方案作为基准，整理出清单，区分当前症状、既往症状与相关检查指标。
 
 ### 【辨证坐标系构建】
 - **八纲定位**: 列出【已知信息】，以"象思维"来执行八纲要求，进行逐一辩证，说明先后顺序和主次关系，并排除其他可能性的理由和证据，请注意，禁止任何武断，【验证】是否需要补充信息。
@@ -86,10 +86,6 @@ export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = `你# Role: 中医临床逻辑
 - **本虚标实审计**: 评估方剂是否抓住了病机根本，药物间的非线性作用，并用证据【验证】。
 - **药性制衡分析**: 剖析方中药物，引入药理学、药代动力学来【验证】相互作用。
 - **批判性漏洞扫描**: 针对核心疑问，进行多假设的“证据链验证”然后反思是否存在逻辑漏洞，判断是否有足够多证据支持和【验证】？。
-
-### 【风险扫描与动态追踪】
-- **新发症状推演**: 对 $t > T_0$ 后的新情况，进行严谨的“证据链验证”任何假设都不能随意推翻，需要重分【验证】和祛魅。
-- **事实核查**: 用临床数据来验证或证伪之前的理论担忧，引用过往【已知信息】的证据和是否存在单因素问题，并说明观察周期和证伪强度。
 
 ### 【结案定性与评级】
 - **逻辑闭环**: 从多个维度总结方剂的得失。
@@ -257,8 +253,8 @@ const getBaseUrl = (url?: string) => {
     return base;
 };
 
-// Robust JSON Extractor
-const extractJsonFromText = (text: string): string => {
+// Robust JSON Extractor (Exported for UI use)
+export const extractJsonFromText = (text: string): string => {
     const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
     if (markdownMatch && markdownMatch[1]) {
         return markdownMatch[1].trim();
@@ -689,30 +685,62 @@ export async function* extractMedicalRecordStream(
     if (!settings.apiKey) throw new Error("API Key missing");
 
     const instruction = `
-    任务：你是一个高级医疗数据引擎。请读取用户提供的全部病历文本，提取所有关键医疗数据。
+    任务：你是一个临床数据结构化专家。请从病历文本中提取医疗数据。
     
-    输出要求：
-    1. 必须输出且仅输出一个合法的 JSON 对象。
-    2. JSON 必须包含以下三个数组字段：
-       - "westernReports": [{ "date": "YYYY-MM-DD", "item": "项目名称", "result": "结果数值/描述" }] 
-       - "tcmTreatments": [{ "date": "YYYY-MM-DD", "plan": "处方名称、治法或具体用药" }] 
-       - "vitalSigns": [{ "date": "YYYY-MM-DD", "reading": "数值(如120/80)", "type": "BP/Glu/HR", "context": "备注(如空腹/饭后)" }]
-    3. 如果文中没有日期，请根据上下文推断或使用当前日期。
-    4. 忽略闲聊，只提取硬数据。不要输出 Markdown 代码块标记，只输出纯 JSON 字符串。
+    【核心规则：体征提取】
+    必须提取所有“血压(BP)”和“心率(HR)”数据，即使它们分散在文本中或格式不规范。
+    示例输入1: "BP: 130/80 mmHg, HR 75" -> 提取为 {"reading": "130/80", "heartRate": "75", "context": "常规"}
+    示例输入2: "左上肢血压125/85，心率80次/分" -> 提取为 {"reading": "125/85", "heartRate": "80", "location": "左上肢"}
+    示例输入3: "2023-10-01 晨起 110/70" -> 提取为 {"date": "2023-10-01", "reading": "110/70", "context": "晨起"}
+    
+    【核心规则：检查报告】
+    必须按日期严格区分。即使是同一种检查（如血常规），如果是不同日期的，必须分为两条记录。
+    
+    【核心规则：中医方案】
+    必须提取“治法思路”、“处方”、“疗程反馈”三个部分。
+    
+    JSON 输出结构：
+    {
+      "westernReports": [
+        { "date": "YYYY-MM-DD", "item": "项目名称", "result": "结果详情" }
+      ],
+      "tcmTreatments": [
+        { 
+          "date": "YYYY-MM-DD", 
+          "prescription": "处方内容",
+          "strategy": "治法思路",
+          "feedback": "疗程反馈"
+        }
+      ],
+      "vitalSigns": [
+        { 
+          "date": "YYYY-MM-DD", 
+          "reading": "收缩压/舒张压 (如 120/80)", 
+          "heartRate": "心率 (数值)", 
+          "location": "位置 (如 左手)",
+          "context": "备注" 
+        }
+      ]
+    }
+    
+    注意：
+    1. 即使没有找到数据，也必须返回空的数组: []。
+    2. 如果无法确定日期，请尝试从上下文推断，否则留空或填 "Unknown"。
     `;
 
-    // Cap input size just in case, though 30k is fine for modern models
-    const safeText = fullText.length > 40000 ? fullText.slice(0, 40000) + "...(truncated)" : fullText;
+    // Cap input size just in case, though 50k is usually fine for 128k context models
+    const safeText = fullText.length > 50000 ? fullText.slice(0, 50000) + "...(truncated)" : fullText;
 
     let payload: any = {
         model: settings.model || "gpt-3.5-turbo",
         messages: [
             { role: "system", content: instruction },
-            { role: "user", content: `原始全量文本：\n${safeText}` }
+            { role: "user", content: `待处理文本：\n\n${safeText}` }
         ],
-        stream: true, // CRITICAL: Stream to keep connection alive
-        temperature: 0,
-        max_tokens: 8000 // Allow large output
+        stream: true, 
+        temperature: 0.1, // Low temp for structure
+        max_tokens: 4096, // Reasonable limit for JSON output
+        response_format: { type: "json_object" } // FORCE JSON MODE
     };
     
     payload = cleanPayloadForModel(payload);
@@ -782,7 +810,8 @@ export const generateStructuredMedicalUpdate = async (conversationHistoryOrRawTe
         messages: [{ role: "system", content: instruction }, { role: "user", content: conversationHistoryOrRawText }],
         stream: false,
         temperature: 0,
-        max_tokens: 4000
+        max_tokens: 4000,
+        response_format: { type: "json_object" } // FORCE JSON MODE HERE TOO
     };
     payload = cleanPayloadForModel(payload); 
     const res = await fetchWithRetry(`${getBaseUrl(settings.apiBaseUrl)}/chat/completions`, { method: "POST", headers: getHeaders(settings.apiKey), body: JSON.stringify(payload) });

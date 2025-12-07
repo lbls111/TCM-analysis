@@ -35,6 +35,8 @@ interface Props {
   onUpdateMedicalRecord: (record: MedicalRecord) => void;
   onUpdateHerb: (herb: Partial<BenCaoHerb>) => void;
   onHerbClick?: (herbName: string) => void;
+  onUpdatePrescription?: (newPrescription: string) => void;
+  onRegenerateReport?: (instruction?: string) => void;
   isVisitorMode: boolean;
   isAdminMode: boolean;
   activePatient?: Patient | null;
@@ -243,14 +245,10 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
     );
 });
 
-// Main Component export remains largely same, just ensuring imports are clean
 export const AIChatbot: React.FC<Props> = (props) => {
-    // ... existing wrapper logic ...
-    // Using direct copy of previous AIChatbot logic but ensuring it uses the new ChatMessageItem
     return <AIChatbotInner {...props} />;
 };
 
-// ... copy previous implementation of AIChatbot logic ...
 const AIChatbotInner: React.FC<Props> = ({ 
   analysis, 
   prescriptionInput, 
@@ -260,6 +258,8 @@ const AIChatbotInner: React.FC<Props> = ({
   onUpdateMedicalRecord,
   onUpdateHerb,
   onHerbClick,
+  onUpdatePrescription,
+  onRegenerateReport,
   isVisitorMode,
   isAdminMode,
   activePatient,

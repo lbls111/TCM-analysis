@@ -1,12 +1,12 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { MedicalRecord, AISettings, MedicalKnowledgeChunk, LabResult, TreatmentPlanEntry, BloodPressureReading, Patient } from '../types';
-import { createEmbedding, createEmptyMedicalRecord, generateStructuredMedicalUpdate, extractMedicalRecordStream } from '../services/openaiService';
-import { upsertPatient } from '../services/supabaseService';
+import React, { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
+import { MedicalRecord, AISettings, MedicalKnowledgeChunk, LabResult, TreatmentPlanEntry, BloodPressureReading, Patient, CloudChatSession } from '../types';
+import { createEmbedding, createEmptyMedicalRecord, generateStructuredMedicalUpdate, extractMedicalRecordStream, extractJsonFromText } from '../services/openaiService';
+import { upsertPatient, fetchCloudChatSessions, deleteCloudChatSession } from '../services/supabaseService';
 
 interface Props {
   record: MedicalRecord;
-  onUpdate: (record: MedicalRecord) => void;
+  onUpdate: Dispatch<SetStateAction<MedicalRecord>>;
   onSaveToCloud?: () => Promise<void>;
   isAdminMode?: boolean;
   settings: AISettings;
@@ -16,6 +16,148 @@ interface Props {
 
 const LS_DRAFT_KEY = "logicmaster_medical_input_draft";
 const LS_AUTO_RUN_KEY = "logicmaster_auto_run_import";
+
+// --- Helper: Robust JSON Fixer ---
+const tryParseOrFixJson = (jsonStr: string): any => {
+    try {
+        return JSON.parse(jsonStr);
+    } catch (e) {
+        // Attempt aggressive fixes
+        let fixed = jsonStr.trim();
+        // 1. Remove trailing comma in arrays/objects
+        fixed = fixed.replace(/,\s*([\]}])/g, '$1');
+        // 2. Close unclosed braces/brackets (simple heuristic)
+        const openBraces = (fixed.match(/{/g) || []).length;
+        const closeBraces = (fixed.match(/}/g) || []).length;
+        const openBrackets = (fixed.match(/\[/g) || []).length;
+        const closeBrackets = (fixed.match(/\]/g) || []).length;
+        
+        fixed += '}'.repeat(Math.max(0, openBraces - closeBraces));
+        fixed += ']'.repeat(Math.max(0, openBrackets - closeBrackets));
+        fixed += '}'.repeat(Math.max(0, openBraces - closeBraces - (fixed.match(/}/g)||[]).length + closeBraces)); // Re-check braces
+
+        try {
+            return JSON.parse(fixed);
+        } catch (e2) {
+            console.warn("JSON fix failed:", e2);
+            return null;
+        }
+    }
+};
+
+// --- Helper: Regex Fallback for Vitals ---
+const extractVitalsByRegex = (text: string): any[] => {
+    const results: any[] = [];
+    // Matches patterns like: 120/80, 120/80mmHg, BP 120/80
+    // Captures: 1=Date(opt), 3=BP, 4=HR(opt)
+    const bpRegex = /(?:(\d{4}[-./年]\d{1,2}[-./月]\d{1,2}[日]?)|)\s*.*?(?:BP|血压|Bp).*?[:：]?\s*(\d{2,3}\s*[\/／]\s*\d{2,3})\s*(?:mmhg)?(?:\s*[,，]?\s*(?:HR|心率|P).*?[:：]?\s*(\d{2,3}))?/gi;
+    
+    let match;
+    while ((match = bpRegex.exec(text)) !== null) {
+        // Extract context (surrounding text) to find "left/right" etc.
+        const contextStart = Math.max(0, match.index - 20);
+        const contextEnd = Math.min(text.length, match.index + match[0].length + 10);
+        const contextStr = text.substring(contextStart, contextEnd);
+        
+        let location = "";
+        if (contextStr.includes("左")) location = "左侧";
+        else if (contextStr.includes("右")) location = "右侧";
+        
+        results.push({
+            date: match[1] ? match[1].replace(/[年/.]/g, '-').replace(/[月日]/g, '') : "Unknown",
+            reading: match[2].replace(/\s/g, ''),
+            heartRate: match[3] || "",
+            location: location,
+            context: "正则提取兜底"
+        });
+    }
+    return results;
+};
+
+// --- Sub-Component: Cloud Archive Modal ---
+const CloudRecordArchiveModal: React.FC<{ 
+    isOpen: boolean; 
+    onClose: () => void; 
+    settings: AISettings; 
+    onLoad: (record: MedicalRecord) => void;
+}> = ({ isOpen, onClose, settings, onLoad }) => {
+    const [archives, setArchives] = useState<CloudChatSession[]>([]);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (isOpen && settings.supabaseKey) {
+            loadArchives();
+        }
+    }, [isOpen, settings.supabaseKey]);
+
+    const loadArchives = async () => {
+        setLoading(true);
+        try {
+            // Fetch all sessions (including medical records)
+            const allSessions = await fetchCloudChatSessions(settings);
+            // Filter for medical record snapshots
+            const records = allSessions.filter(s => s.id.startsWith('medical_record_master_'));
+            setArchives(records);
+        } catch (e) {
+            console.error("Failed to load archives", e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDelete = async (id: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (window.confirm("确定删除此存档吗？")) {
+            await deleteCloudChatSession(id, settings);
+            setArchives(prev => prev.filter(a => a.id !== id));
+        }
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose}></div>
+            <div className="relative bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 max-h-[80vh]" onClick={e => e.stopPropagation()}>
+                <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><span>📂</span> 电子病历云端存档</h3>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-3">
+                    {loading ? (
+                        <div className="text-center py-10 text-slate-400">加载中...</div>
+                    ) : archives.length === 0 ? (
+                        <div className="text-center py-10 text-slate-400">暂无存档记录</div>
+                    ) : (
+                        archives.map(arch => (
+                            <div 
+                                key={arch.id} 
+                                onClick={() => { onLoad(arch.medical_record || createEmptyMedicalRecord()); onClose(); }}
+                                className="p-4 border border-slate-200 rounded-xl hover:bg-indigo-50 hover:border-indigo-200 transition-all cursor-pointer group relative"
+                            >
+                                <div className="flex justify-between items-start mb-1">
+                                    <h4 className="font-bold text-slate-700 text-sm truncate pr-8">{arch.title}</h4>
+                                    <span className="text-[10px] text-slate-400 bg-white px-1.5 py-0.5 rounded border border-slate-100 whitespace-nowrap">
+                                        {new Date(arch.created_at).toLocaleDateString()}
+                                    </span>
+                                </div>
+                                <div className="text-xs text-slate-500 mt-1">
+                                    包含了 {(arch.medical_record?.knowledgeChunks || []).length} 条知识片段
+                                </div>
+                                <button 
+                                    onClick={(e) => handleDelete(arch.id, e)}
+                                    className="absolute top-3 right-3 w-7 h-7 rounded-lg bg-white text-slate-300 hover:text-red-500 hover:bg-red-50 border border-slate-100 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const SchemaErrorAlert: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const copySql = () => {
@@ -75,6 +217,9 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   const [showAutoRunToast, setShowAutoRunToast] = useState(false);
   const [isDeepExtracting, setIsDeepExtracting] = useState(false);
   const [deepExtractProgress, setDeepExtractProgress] = useState('');
+  
+  // Archive Modal State
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
   
   const [editingChunkId, setEditingChunkId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
@@ -180,7 +325,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
       return chunks;
   };
 
-  // === NEW: Single-Shot Fast Extraction ===
+  // === NEW: Dual-Engine Fast Extraction ===
   const handleFastExtraction = async () => {
       if (record.knowledgeChunks.length === 0) {
           alert("知识库为空，无法进行提取。");
@@ -197,8 +342,8 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
       const controller = new AbortController();
       deepExtractAbortControllerRef.current = controller;
 
-      // Combine all text (Limit to 40k chars for safety, usually covers entire history)
-      const allText = record.knowledgeChunks.map(c => c.content).join('\n\n').slice(0, 40000);
+      // Combine all text (Limit to 50k chars for safety, usually covers entire history)
+      const allText = record.knowledgeChunks.map(c => c.content).join('\n\n').slice(0, 50000);
       const newRecord = JSON.parse(JSON.stringify(record));
       
       let receivedBytes = 0;
@@ -214,46 +359,94 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
               setDeepExtractProgress(`接收数据中... (${(receivedBytes/1024).toFixed(1)} KB)`);
           }
 
-          addLog(`⚡ 数据接收完成，正在解析 JSON...`);
+          addLog(`⚡ 数据接收完成，正在解析...`);
           
-          // Extract JSON from potential Markdown wrappers
-          const jsonStr = rawJsonBuffer.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || 
-                          (rawJsonBuffer.includes('{') ? rawJsonBuffer.substring(rawJsonBuffer.indexOf('{'), rawJsonBuffer.lastIndexOf('}') + 1) : "{}");
+          // Use robust extractor + fixer
+          const jsonStr = extractJsonFromText(rawJsonBuffer);
+          let jsonPayload: any = tryParseOrFixJson(jsonStr);
           
-          let jsonPayload: any = {};
-          try {
-              jsonPayload = JSON.parse(jsonStr);
-          } catch (e) {
-              console.warn("JSON Parse Failed, trying simplified clean...");
-              // Fallback: try to clean common issues
-              try { jsonPayload = JSON.parse(jsonStr.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']')); } catch(e2) {}
+          if (!jsonPayload) {
+              addLog(`⚠️ JSON 解析彻底失败，切换至纯正则模式兜底。`);
+              jsonPayload = {};
+          } else {
+              addLog(`✅ JSON 解析成功。`);
           }
 
           let updateCount = 0;
+          
+          // 1. Process Western Reports (AI)
           if (jsonPayload.westernReports?.length) {
               jsonPayload.westernReports.forEach((item: any) => {
-                  newRecord.auxExams.labResults.push({ id: `lab-fast-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], item: item.item, result: item.result });
+                  newRecord.auxExams.labResults.push({ 
+                      id: `lab-fast-${Date.now()}-${Math.random()}`, 
+                      date: item.date || new Date().toISOString().split('T')[0], 
+                      item: item.item, 
+                      result: item.result 
+                  });
               });
               updateCount += jsonPayload.westernReports.length;
           }
+          
+          // 2. Process TCM Treatments (AI)
           if (jsonPayload.tcmTreatments?.length) {
               jsonPayload.tcmTreatments.forEach((item: any) => {
-                  newRecord.diagnosis.treatmentPlans.push({ id: `plan-fast-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], plan: item.plan });
+                  let fullPlan = item.prescription || item.plan || "";
+                  if (item.strategy) fullPlan = `【治法思路】${item.strategy}\n\n【处方】${fullPlan}`;
+                  if (item.feedback) fullPlan += `\n\n【疗程反馈】${item.feedback}`;
+                  
+                  newRecord.diagnosis.treatmentPlans.push({ 
+                      id: `plan-fast-${Date.now()}-${Math.random()}`, 
+                      date: item.date || new Date().toISOString().split('T')[0], 
+                      plan: fullPlan.trim() 
+                  });
               });
               updateCount += jsonPayload.tcmTreatments.length;
           }
-          if (jsonPayload.vitalSigns?.length) {
-              jsonPayload.vitalSigns.forEach((item: any) => {
-                  newRecord.physicalExam.bloodPressureReadings.push({ id: `vital-fast-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], reading: item.reading, heartRate: '', context: `${item.type || ''} ${item.context || ''}`.trim() });
+          
+          // 3. Process Vital Signs (AI + Regex Fallback Dual-Engine)
+          // Engine A: AI Results
+          let vitalSigns = Array.isArray(jsonPayload.vitalSigns) ? [...jsonPayload.vitalSigns] : [];
+          
+          // Engine B: Regex Fallback (Always run this for vitals as AI often misses them in complex text)
+          const regexVitals = extractVitalsByRegex(allText);
+          if (regexVitals.length > 0) {
+              addLog(`🔎 正则引擎发现 ${regexVitals.length} 条体征数据，正在合并...`);
+              // Simple de-duplication strategy: If Regex found something AI missed (based on reading value)
+              const aiReadings = new Set(vitalSigns.map((v:any) => v.reading));
+              regexVitals.forEach(rv => {
+                  if (!aiReadings.has(rv.reading)) {
+                      vitalSigns.push(rv);
+                  }
               });
-              updateCount += jsonPayload.vitalSigns.length;
+          }
+
+          if (vitalSigns.length > 0) {
+              vitalSigns.forEach((item: any) => {
+                  const date = (item.date && item.date !== 'Unknown') ? item.date : new Date().toISOString().split('T')[0];
+                  const reading = item.reading || "";
+                  const heartRate = item.heartRate ? String(item.heartRate) : "";
+                  
+                  const details = [];
+                  if (item.location) details.push(item.location);
+                  if (item.context) details.push(item.context);
+                  const fullContext = details.join(' · ');
+
+                  newRecord.physicalExam.bloodPressureReadings.push({ 
+                      id: `vital-fast-${Date.now()}-${Math.random()}`, 
+                      date: date, 
+                      reading: reading, 
+                      heartRate: heartRate, 
+                      context: fullContext || "常规测量" 
+                  });
+              });
+              updateCount += vitalSigns.length;
           }
 
           if (updateCount > 0) {
               onUpdate(newRecord);
               addLog(`🎉 极速提取完成！共发现 ${updateCount} 条结构化数据。`);
           } else {
-              addLog("⚠️ 提取完成，但未发现符合格式的数据。");
+              addLog("⚠️ 提取完成，但各项数据为空。请检查病历文本。");
           }
 
       } catch (e: any) {
@@ -376,7 +569,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
               }
               
               // Merge chunks
-              onUpdate(prev => ({ ...prev, knowledgeChunks: [...prev.knowledgeChunks, ...newChunks] }));
+              onUpdate((prev) => ({ ...prev, knowledgeChunks: [...prev.knowledgeChunks, ...newChunks] }));
               addLog(`🎉 完成！结构化数据已归档，知识库已更新。`);
           } else {
              addLog("✅ 结构化数据已录入 (无新增文本片段)。");
@@ -528,7 +721,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                                  <div key={i} className="relative">
                                      <div className="absolute -left-[21px] top-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white shadow-sm"></div>
                                      <div className="text-xs font-bold text-emerald-600 mb-1">{plan.date}</div>
-                                     <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm text-sm text-slate-700 leading-relaxed">
+                                     <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
                                          {plan.plan}
                                      </div>
                                  </div>
@@ -544,6 +737,12 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   return (
     <div className="h-full w-full flex flex-col md:flex-row gap-6 p-4 overflow-hidden relative">
       {showSchemaError && <SchemaErrorAlert onClose={() => setShowSchemaError(false)} />}
+      <CloudRecordArchiveModal 
+          isOpen={showArchiveModal} 
+          onClose={() => setShowArchiveModal(false)} 
+          settings={settings} 
+          onLoad={(rec) => { onUpdate(rec); addLog("☁️ 已加载云端病历存档"); }} 
+      />
       {showAutoRunToast && (
           <div className="absolute top-20 left-1/2 -translate-x-1/2 z-50 bg-indigo-600 text-white px-6 py-3 rounded-full shadow-xl flex items-center gap-3 animate-in slide-in-from-top-4 fade-in">
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
@@ -564,6 +763,11 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                   {isAutoSaving && <span className="text-xs text-indigo-500 animate-pulse">☁️ 同步中...</span>}
               </div>
               <div className="flex gap-2">
+                  {!activePatient && (
+                      <button onClick={() => setShowArchiveModal(true)} className="text-xs text-indigo-600 font-bold px-3 py-1.5 rounded border border-indigo-200 bg-indigo-50 hover:bg-indigo-100">
+                          <span>📂</span> 历史
+                      </button>
+                  )}
                   {isAdminMode && !activePatient && (
                       <button onClick={handleSyncToCloud} className="text-xs text-emerald-600 font-bold px-3 py-1.5 rounded border border-emerald-200 bg-emerald-50">
                           <span>☁️</span> 存档
@@ -589,7 +793,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                                          <span key={tag} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${tag.includes('结构化') ? 'bg-purple-50 text-purple-600 border-purple-100' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{tag}</span>
                                      ))}
                                      {chunk.embedding ? <span className="text-[10px] font-bold bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full border border-emerald-100">⚡ 已向量化</span> : <span className="text-[10px] font-bold bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full border border-amber-100">🔸 仅文本</span>}
-                                     <button onClick={() => setEditingChunkId(chunk.id) || setEditContent(chunk.content)} className="ml-auto text-[10px] font-bold text-indigo-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">✎ 编辑</button>
+                                     <button onClick={() => { setEditingChunkId(chunk.id); setEditContent(chunk.content); }} className="ml-auto text-[10px] font-bold text-indigo-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">✎ 编辑</button>
                                  </div>
                                  {editingChunkId === chunk.id ? (
                                      <div className="space-y-2"><textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="w-full p-2 border border-indigo-200 rounded-lg text-sm outline-none" rows={4}/><div className="flex gap-2 justify-end"><button onClick={() => setEditingChunkId(null)} className="text-xs px-2 py-1 rounded bg-slate-100">取消</button><button onClick={handleSaveEdit} className="text-xs px-2 py-1 rounded bg-indigo-600 text-white">保存</button></div></div>
