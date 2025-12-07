@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { analyzePrescriptionWithAI, generateHerbDataWithAI, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION, QUICK_ANALYZE_SYSTEM_INSTRUCTION, createEmptyMedicalRecord, fetchAvailableModels } from './services/openaiService';
 import { calculatePrescription, getPTILabel } from './utils/tcmMath';
@@ -55,6 +54,45 @@ const NAV_ITEMS = [
   { id: ViewMode.DATABASE, label: '药典库', icon: '📚' }
 ];
 
+// --- Sub-Component: Cold/Heat Gauge ---
+const ColdHeatGauge = ({ pti }: { pti: number }) => {
+  // Clamp pti between -3 and 3 for display purposes
+  const val = Math.max(-3, Math.min(3, pti));
+  // Convert -3..3 to 0..100%
+  const percent = ((val + 3) / 6) * 100;
+  
+  return (
+    <div className="w-full mt-6 mb-8 px-2">
+        <div className="relative w-full h-14 bg-gradient-to-r from-blue-600 via-emerald-400 to-red-600 rounded-2xl shadow-inner border-2 border-white/50">
+           {/* Markers */}
+           <div className="absolute top-0 bottom-0 left-1/2 w-0.5 bg-white/60 z-10"></div>
+           <div className="absolute top-2 bottom-2 left-[16.6%] w-px bg-white/30 border-l border-dashed border-white/50"></div>
+           <div className="absolute top-2 bottom-2 right-[16.6%] w-px bg-white/30 border-r border-dashed border-white/50"></div>
+           
+           {/* Labels */}
+           <div className="absolute -bottom-7 left-0 text-[10px] font-bold text-blue-600 uppercase tracking-wider">Great Cold</div>
+           <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-[10px] font-bold text-emerald-600 uppercase tracking-wider bg-white/50 px-2 rounded-full backdrop-blur-sm">Neutral</div>
+           <div className="absolute -bottom-7 right-0 text-[10px] font-bold text-red-600 uppercase tracking-wider">Great Heat</div>
+           
+           {/* Needle */}
+           <div 
+             className="absolute top-[-6px] bottom-[-6px] w-3 bg-white border-[3px] border-slate-700 rounded-full shadow-xl transition-all duration-700 ease-out z-20"
+             style={{ left: `calc(${percent}% - 6px)` }}
+           ></div>
+           
+           {/* Value Bubble */}
+           <div 
+             className="absolute -top-12 -translate-x-1/2 bg-slate-800 text-white text-sm font-black px-3 py-1.5 rounded-xl shadow-xl z-30 min-w-[60px] text-center"
+             style={{ left: `${percent}%` }}
+           >
+             {pti > 0 ? '+' : ''}{pti.toFixed(2)}
+             <div className="absolute bottom-[-6px] left-1/2 -translate-x-1/2 border-l-[6px] border-r-[6px] border-t-[6px] border-transparent border-t-slate-800"></div>
+           </div>
+        </div>
+    </div>
+  );
+};
+
 // --- Main App Component ---
 function LogicMasterApp() {
   const { addLog } = useLog(); // Use the log hook
@@ -67,6 +105,9 @@ function LogicMasterApp() {
   const [activePatient, setActivePatient] = useState<Patient | null>(null);
   const [showPatientManager, setShowPatientManager] = useState(false);
   
+  // PRO Mode State (Default to TRUE as requested)
+  const [isProMode, setIsProMode] = useState(true);
+
   // Home Page Patient Selection
   const [recentPatients, setRecentPatients] = useState<Patient[]>([]);
   const [isLoadingPatients, setIsLoadingPatients] = useState(false);
@@ -335,26 +376,20 @@ function LogicMasterApp() {
       if (!text) return "";
       let clean = text;
 
-      // 1. UNWRAP HTML CODE BLOCKS AGGRESSIVELY - FIXED Regex to be selective
-      // Only unwrap explicit HTML/XML blocks
+      // 1. UNWRAP HTML CODE BLOCKS AGGRESSIVELY
       clean = clean.replace(/```(html|xml)\s*([\s\S]*?)```/gi, '$2');
       
-      // 2. Strip HTML Document Wrapper Tags (Aggressive sanitization to prevent layout shift)
-      // Remove any <html>, <head>, <body> tags entirely
+      // 2. Strip HTML Document Wrapper Tags
       clean = clean.replace(/<!DOCTYPE html>/gi, '');
       clean = clean.replace(/<html[^>]*>[\s\S]*?<body[^>]*>/gi, ''); 
       clean = clean.replace(/<\/body>[\s\S]*?<\/html>/gi, '');
       clean = clean.replace(/<\/?html[^>]*>/gi, '');
       clean = clean.replace(/<\/?head[^>]*>/gi, '');
       clean = clean.replace(/<\/?body[^>]*>/gi, '');
-      
-      // Remove <style> tags if they exist (since we inject global styles now)
-      // to prevent conflicts or bad scoping
       clean = clean.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
 
       // 3. Inject Herb Links
       if (herbRegex) {
-          // Guard against replacing inside HTML attributes
           return clean.replace(herbRegex, (match, p1, offset, string) => {
               const before = string.slice(Math.max(0, offset - 2), offset);
               if (before.includes('="') || before.includes("='")) return match;
@@ -368,9 +403,7 @@ function LogicMasterApp() {
   useEffect(() => {
     if (view === ViewMode.REPORT && reports[activeReportVersion]) {
         const currentReport = reports[activeReportVersion];
-        // CHECK FOR THE EXPLICIT DONE MARKER OR LENGTH HEURISTIC IF LOADING IS DONE
         const isComplete = currentReport.includes('<!-- DONE -->');
-        // Only show continue button if NOT loading and NOT complete and has some content
         if (!aiLoading && !isComplete && currentReport.length > 50) {
             setIsReportIncomplete(true);
         } else {
@@ -390,42 +423,35 @@ function LogicMasterApp() {
              setCloudReports(history);
           }
       };
-      // Only load if not already loaded to prevent spamming
       if (view === ViewMode.REPORT && userMode !== UserMode.SELECT) {
           loadHistory();
       }
-  }, [view, activeAiSettings, activePatient]); // RELOAD on patient change
+  }, [view, activeAiSettings, activePatient]); 
 
   const handlePatientSelect = (patient: Patient | null) => {
       setActivePatient(patient);
       if (patient) {
-          // Load Patient Context
           setMedicalRecord(patient.medical_record || createEmptyMedicalRecord());
           addLog('info', 'Patient', `Switched to patient: ${patient.name}`);
-          // Clear current temporary state to ensure isolation
           setReports({}); 
-          setCloudReports([]); // Will auto-refetch
-          setView(ViewMode.MEDICAL_RECORD); // Direct to record
-          setInput(''); // Clear input for safety
+          setCloudReports([]); 
+          setView(ViewMode.MEDICAL_RECORD); 
+          setInput(''); 
       } else {
-          // Reset to generic state
           setMedicalRecord(createEmptyMedicalRecord());
           setReports({});
           addLog('info', 'Patient', 'Switched to generic workspace');
       }
   };
   
-  // Home Page Quick Select
   const handleHomePatientSelect = (patient: Patient) => {
       handlePatientSelect(patient);
-      // FIX: Stay on INPUT view so user can input prescription
       setView(ViewMode.INPUT); 
       addLog('info', 'Nav', 'Selected patient from Home, staying on Input view');
   };
 
   const handleReportClick = (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
-      // Handle herb links using event delegation
       if (target.matches('.herb-link') || target.closest('.herb-link')) {
           const el = target.matches('.herb-link') ? target : target.closest('.herb-link');
           const herbName = el?.getAttribute('data-herb-name');
@@ -529,7 +555,6 @@ function LogicMasterApp() {
   };
 
   const handleSaveMedicalRecordToCloud = async () => {
-      // Legacy or Non-Patient Mode: Use Chat Session Archive
       if (!activePatient) {
           if (isVisitorMode) {
               alert("访客模式限制：无法保存到云端。请切换至管理员模式或配置私有数据库。");
@@ -572,8 +597,6 @@ function LogicMasterApp() {
           }
           return;
       }
-
-      // ACTIVE PATIENT MODE
       alert("在【患者管理】模式下，病历修改会自动保存到患者档案，无需手动归档。\n如需创建历史副本，请手动导出或截图。");
   };
 
@@ -598,7 +621,6 @@ function LogicMasterApp() {
     let targetMode: ReportMode = 'deep';
     let sysPrompt = customReportPrompt;
     
-    // Combine regenerateInstructions (from chat) with reportInstruction (from textbox)
     let instructions = regenerateInstructions || "";
     if (reportInstruction.trim()) {
         instructions = instructions ? `${instructions}\n${reportInstruction}` : reportInstruction;
@@ -635,7 +657,7 @@ function LogicMasterApp() {
         analysis,
         input,
         activeAiSettings,
-        instructions, // Passed here
+        instructions, 
         undefined,
         controller.signal,
         sysPrompt, 
@@ -648,7 +670,6 @@ function LogicMasterApp() {
         setReports(prev => ({ ...prev, [versionToUse]: htmlContent }));
       }
 
-      // Check final content for DONE marker
       const isComplete = htmlContent.includes('<!-- DONE -->'); 
       setIsReportIncomplete(!isComplete);
       addLog('success', 'AI', 'Generation completed', { incomplete: !isComplete });
@@ -660,8 +681,14 @@ function LogicMasterApp() {
           return;
       }
       console.error(err);
-      addLog('error', 'AI', 'Generation failed', { error: err.message });
-      setAiError(err.message || "请求 AI 时发生未知错误");
+      
+      let errMsg = err.message || "请求 AI 时发生未知错误";
+      if (errMsg.includes("SENSITIVE_CONTENT") || errMsg.includes("sensitive words")) {
+          errMsg = "⚠️ 内容包含敏感词，已被 AI 服务商拦截。请检查处方说明或提示词配置。";
+      }
+      
+      addLog('error', 'AI', 'Generation failed', { error: errMsg });
+      setAiError(errMsg);
     } finally {
       setAiLoading(false);
       abortControllerRef.current = null;
@@ -669,7 +696,6 @@ function LogicMasterApp() {
   };
 
   const handleContinueAI = async () => {
-    // Only continue if we have a report and it's marked as incomplete (or manually forced)
     if (!analysis || !reports[activeReportVersion] || aiLoading) return;
 
     setAiLoading(true);
@@ -686,8 +712,8 @@ function LogicMasterApp() {
         analysis,
         input,
         activeAiSettings,
-        "Please continue generating the report from where you left off. Ensure you close any open HTML tags.", // Explicit instruction
-        partialReport, // Pass existing content as context
+        "Please continue generating the report from where you left off. Ensure you close any open HTML tags.", 
+        partialReport, 
         controller.signal,
         sysPrompt,
         medicalRecord
@@ -706,15 +732,20 @@ function LogicMasterApp() {
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       console.error(err);
-      addLog('error', 'AI', 'Continuation failed', { error: err.message });
-      setAiError(err.message || "续写报告时发生错误。");
+      
+      let errMsg = err.message || "续写报告时发生错误。";
+      if (errMsg.includes("SENSITIVE_CONTENT") || errMsg.includes("sensitive words")) {
+          errMsg = "⚠️ 续写内容触发敏感词拦截。";
+      }
+      
+      addLog('error', 'AI', 'Continuation failed', { error: errMsg });
+      setAiError(errMsg);
     } finally {
       setAiLoading(false);
       abortControllerRef.current = null;
     }
   };
 
-  // ... (Rest of existing methods handleAutoFillHerb, handleUpdatePrescriptionFromChat etc. remain same) ...
   const handleAutoFillHerb = async (herbName: string) => {
      if (!activeAiSettings.apiKey) {
          alert("AI补全需要配置API Key。");
@@ -736,8 +767,10 @@ function LogicMasterApp() {
              alert("AI 无法生成该药材的数据。");
          }
      } catch (e: any) {
-         addLog('error', 'HerbDB', `Auto-fill failed`, { error: e.message });
-         alert(`补全失败: ${e.message}`);
+         let errMsg = e.message;
+         if (errMsg.includes("SENSITIVE_CONTENT")) errMsg = "敏感词触发";
+         addLog('error', 'HerbDB', `Auto-fill failed`, { error: errMsg });
+         alert(`补全失败: ${errMsg}`);
      } finally {
          setAutoFillingHerb(null);
      }
@@ -873,15 +906,17 @@ function LogicMasterApp() {
     return 'bg-emerald-100 text-emerald-700 border-emerald-200';
   };
 
-  // ... (renderCalculationTable and MobileBottomNav remain same) ...
   const renderCalculationTable = (targetAnalysis: AnalysisResult) => {
       if (!targetAnalysis) return null;
       return (
       <div className="overflow-hidden rounded-2xl border border-slate-200 shadow-xl bg-white/80 backdrop-blur-xl">
-        <div className="p-6 bg-white/50 border-b border-slate-100">
+        <div className="p-6 bg-white/50 border-b border-slate-100 flex justify-between items-center">
            <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
               <span className="w-1.5 h-6 bg-indigo-600 rounded-full"></span> 处方物理明细
            </h3>
+           {isProMode && (
+               <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-1 rounded border border-indigo-100 font-bold">PRO Mode Active</span>
+           )}
         </div>
         <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -889,6 +924,7 @@ function LogicMasterApp() {
               <tr>
                 <th className="px-6 py-4">药名 (Herb)</th>
                 <th className="px-6 py-4 text-right">剂量 (g)</th>
+                {isProMode && <th className="px-6 py-4 text-center">权重 (WF) / 占比</th>}
                 <th className="px-6 py-4 text-center">药性/能值</th>
                 <th className="px-6 py-4 text-right">PTI 贡献</th>
                 <th className="px-6 py-4 text-right text-slate-400">矢量 (Vector)</th>
@@ -928,6 +964,11 @@ function LogicMasterApp() {
                     <td className="px-6 py-4 text-right font-mono text-slate-600">
                       {h.dosageGrams}
                     </td>
+                    {isProMode && (
+                        <td className="px-6 py-4 text-center text-xs font-mono text-slate-500">
+                            WF: {h.wf.toFixed(2)} | Ratio: {(h.dr * 100).toFixed(1)}%
+                        </td>
+                    )}
                     <td className="px-6 py-4 text-center">
                       <span className={`px-3 py-1 rounded-full text-xs font-bold border ${getTempBadgeStyle(h.displayTemperature)}`}>
                         {h.displayTemperature} <span className="opacity-50 mx-1">|</span> {h.hvCorrected.toFixed(1)}
@@ -1103,7 +1144,7 @@ function LogicMasterApp() {
                  >
                      <span className="text-base">{activePatient ? '👤' : '👥'}</span>
                      <span>{activePatient ? activePatient.name : '选择患者'}</span>
-                     <span className="text-[10px] opacity-50">▼</span>
+                     <span className="text-xs opacity-50">▼</span>
                  </button>
              )}
 
@@ -1131,6 +1172,18 @@ function LogicMasterApp() {
           </nav>
 
           <div className="flex items-center gap-2">
+             <div className="flex items-center mr-2">
+                 {view === ViewMode.WORKSHOP && (
+                    <label className="flex items-center cursor-pointer gap-2 group" title="专业模式：显示寒热仪表盘与计算公式">
+                        <div className="relative">
+                            <input type="checkbox" className="sr-only peer" checked={isProMode} onChange={(e) => setIsProMode(e.target.checked)} />
+                            <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                        </div>
+                        <span className={`text-xs font-bold ${isProMode ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'}`}>PRO</span>
+                    </label>
+                 )}
+             </div>
+             
              <button onClick={() => setShowLogViewer(true)} className="p-2 rounded-lg bg-white border border-slate-100 text-slate-400 hover:text-indigo-600">
                 <span className="text-sm">📟</span>
              </button>
@@ -1249,6 +1302,24 @@ function LogicMasterApp() {
                    <div className="flex justify-between items-end border-t border-slate-100 pt-4 mt-4"><div className="text-xs text-slate-400 font-bold">参考基准</div><div className="font-mono font-bold text-slate-500">{analysis.initialTotalDosage.toFixed(1)}g</div></div>
                 </div>
              </div>
+             
+             {isProMode && (
+                 <div className="bg-white/90 backdrop-blur-sm p-6 rounded-[2rem] border border-slate-200 shadow-lg animate-in fade-in slide-in-from-bottom-2">
+                     <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                         <span className="w-1.5 h-5 bg-gradient-to-b from-blue-500 to-red-500 rounded-full"></span>
+                         寒热平衡仪表盘 (Cold/Heat Balance)
+                     </h3>
+                     <ColdHeatGauge pti={analysis.totalPTI} />
+                     <div className="bg-slate-50 p-4 rounded-xl text-xs text-slate-500 leading-relaxed font-mono mt-4 border border-slate-100">
+                         <strong>算法公式:</strong> PTI = Σ (HVcorrected × WF × DR)
+                         <br/>
+                         其中: HV=药性值, WF=五味权重, DR=剂量占比(DosageRatio). 
+                         <br/>
+                         * 此模型基于经典四气五味量化理论，未包含归经引经修正。
+                     </div>
+                 </div>
+             )}
+
              {renderCalculationTable(analysis)}
             </div>
           </div>
@@ -1274,6 +1345,7 @@ function LogicMasterApp() {
                     isAdminMode={isAdminMode}
                     settings={activeAiSettings} // Pass settings for fetching history
                     activePatient={activePatient} // Pass active patient
+                    isVisible={view === ViewMode.MEDICAL_RECORD} // FIX: Pass visibility prop
                 />
              </div>
         </div>
@@ -1425,6 +1497,7 @@ function LogicMasterApp() {
                         isVisitorMode={isVisitorMode}
                         isAdminMode={isAdminMode}
                         activePatient={activePatient}
+                        onSwitchView={setView} // Pass navigation handler
                      />
                  )}
              </div>

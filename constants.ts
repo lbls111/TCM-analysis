@@ -1,3 +1,4 @@
+
 import { Flavor, Temperature, Constitution, QiDirection, AdministrationMode } from './types';
 
 // ==========================================
@@ -20,8 +21,8 @@ export const DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
 export const VISITOR_DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B";
 
 // API Retry Settings
-export const DEFAULT_RETRY_DELAY = 2000; // 2 seconds
-export const MAX_RETRIES = 5; // Aggressive retry for 503s
+export const DEFAULT_RETRY_DELAY = 1000; // Reduced delay
+export const MAX_RETRIES = 2; // Reduced per user request
 
 // ==========================================
 // 1. 药物寒热值 (HV_生品) 映射表
