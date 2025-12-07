@@ -814,7 +814,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
            <div className="p-6 bg-indigo-600 text-white flex justify-between items-start">
                <div>
                    <h3 className="font-bold text-lg flex items-center gap-2"><span>📥</span> 极速录入 (AI Import)</h3>
-                   <p className="text-indigo-200 text-xs mt-1">智能识别文本 -> 自动分流到三大板块</p>
+                   <p className="text-indigo-200 text-xs mt-1">智能识别文本 → 自动分流到三大板块</p>
                </div>
                {isProcessing && <div className="text-xs font-mono font-bold">{progress.current}/{progress.total}</div>}
            </div>
