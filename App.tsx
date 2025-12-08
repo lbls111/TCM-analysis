@@ -15,7 +15,7 @@ import { PromptEditorModal } from './components/PromptEditorModal';
 import { MedicalRecordManager } from './components/MedicalRecordManager';
 import { PatientManager } from './components/PatientManager';
 import { FULL_HERB_LIST, registerDynamicHerb, loadCustomHerbs } from './data/herbDatabase';
-import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VECTOR_API_KEY, VECTOR_API_URL, VISITOR_DEFAULT_CHAT_MODEL } from './constants';
+import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VECTOR_API_KEY, VECTOR_API_URL, VISITOR_DEFAULT_CHAT_MODEL, DEFAULT_ORGANIZE_MODEL } from './constants';
 import { saveCloudReport, fetchCloudReports, deleteCloudReport, updateCloudHerb, saveCloudChatSession, fetchPatients } from './services/supabaseService';
 
 // Logging Imports
@@ -136,7 +136,8 @@ function LogicMasterApp() {
   const [aiSettings, setAiSettings] = useState<AISettings>({
     apiKey: '',
     apiBaseUrl: DEFAULT_API_URL,
-    model: 'gemini-2.5-pro', // Default as requested
+    model: 'gemini-2.5-flash', // Updated Default from 2.5-pro
+    organizeModel: DEFAULT_ORGANIZE_MODEL, // Initialize with default
     analysisModel: '', 
     chatModel: '', 
     embeddingModel: DEFAULT_EMBEDDING_MODEL,
@@ -292,7 +293,8 @@ function LogicMasterApp() {
         setAiSettings({
           apiKey: parsed.apiKey || '',
           apiBaseUrl: parsed.apiBaseUrl || DEFAULT_API_URL,
-          model: parsed.model || 'gemini-2.5-pro',
+          model: parsed.model || 'gemini-2.5-flash', // Updated Default
+          organizeModel: parsed.organizeModel || DEFAULT_ORGANIZE_MODEL, // Ensure fallback
           analysisModel: parsed.analysisModel || '',
           chatModel: parsed.chatModel || '',
           embeddingModel: parsed.embeddingModel || DEFAULT_EMBEDDING_MODEL,

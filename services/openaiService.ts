@@ -1,6 +1,6 @@
 
 import { AnalysisResult, AISettings, ModelOption, BenCaoHerb, MedicalRecord, TreatmentPlanEntry, MedicalKnowledgeChunk } from "../types";
-import { DEFAULT_RETRY_DELAY, MAX_RETRIES, VECTOR_API_URL, VECTOR_API_KEY, DEFAULT_EMBEDDING_MODEL } from "../constants";
+import { DEFAULT_RETRY_DELAY, MAX_RETRIES, VECTOR_API_URL, VECTOR_API_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_ORGANIZE_MODEL } from "../constants";
 
 export interface OpenAIToolCall {
     id: string;
@@ -106,7 +106,7 @@ export const DEFAULT_ANALYZE_SYSTEM_INSTRUCTION = `# Role: 中医临床逻辑演
     --text-color: #34495E; /* 主要文本 (玄青) */
     --bg-color: #FDFBF7; /* 背景 (月白) */
     --card-bg: #FFFFFF; /* 卡片背景 */
-    --border-color: #EAEAEA; /* 边框 */
+    --border-color: #E2E8F0; /* 边框 */
     --font-serif: 'Noto Serif SC', serif; /* 衬线字体 (标题、引用) */
     --font-sans: 'Roboto', 'Noto Sans SC', sans-serif; /* 非衬线字体 (正文) */
   }
@@ -243,7 +243,7 @@ export const QUICK_ANALYZE_SYSTEM_INSTRUCTION = `请进行安全审核。输出 
 export const CHAT_SYSTEM_INSTRUCTION_BASE = `你是一个智能中医助手。请使用 Markdown 格式回答用户的问题，以获得最佳的显示效果。
 - 重点使用加粗、列表、引用等 Markdown 语法来组织信息。
 - 如果涉及代码或处方，请使用代码块。
-- 回答要专业、严谨且富有同理心。`;
+- 重点：你拥有读取患者病历的能力。当用户提问时，请务必优先查阅【参考病历信息】(RAG Context)，结合患者的具体情况（如体质、既往史、当前症状）进行个性化回答，切勿给出空泛的通用建议。`;
 
 const getHeaders = (apiKey: string) => ({ 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` });
 const getBaseUrl = (url?: string) => {
@@ -608,10 +608,12 @@ export async function* generateChatStream(
     const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
     let ragContext = "";
     const lastUserMsg = history.filter(m => m.role === 'user').pop();
+    // Use RAG only, as requested by user. Do not inject whole medicalRecord JSON.
     if (lastUserMsg && typeof lastUserMsg.text === 'string' && medicalRecord.knowledgeChunks.length > 0) {
         const chunks = await localVectorSearch(lastUserMsg.text, medicalRecord.knowledgeChunks, settings, 5);
         if (chunks.length > 0) {
-            ragContext = `\n[Info]:\n${chunks.map(c => c.content).join('\n')}`;
+            // Explicitly mark this as Context for the AI
+            ragContext = `\n\n【参考病历信息 (RAG)】\n以下是根据用户提问从知识库检索到的相关病历片段，请优先参考这些信息回答：\n${chunks.map(c => `• ${c.content}`).join('\n')}\n【信息结束】\n`;
         }
     }
     const systemMsg: OpenAIMessage = { role: "system", content: systemInstruction + ragContext };
@@ -687,14 +689,14 @@ export async function* extractMedicalRecordStream(
     const instruction = `
     任务：你是一个临床数据结构化专家。请从病历文本中提取医疗数据。
     
-    【核心规则：体征提取】
-    必须提取所有“血压(BP)”和“心率(HR)”数据，即使它们分散在文本中或格式不规范。
-    示例输入1: "BP: 130/80 mmHg, HR 75" -> 提取为 {"reading": "130/80", "heartRate": "75", "context": "常规"}
-    示例输入2: "左上肢血压125/85，心率80次/分" -> 提取为 {"reading": "125/85", "heartRate": "80", "location": "左上肢"}
-    示例输入3: "2023-10-01 晨起 110/70" -> 提取为 {"date": "2023-10-01", "reading": "110/70", "context": "晨起"}
+    【核心规则：体征提取 (Vital Signs)】
+    1. 提取所有“血压(BP)”和“心率(HR)”数据。
+    2. **必须**在 context 字段中记录测量的具体细节，如“左手”、“右手”、“晨起”、“服药后”等。如果文本中提到了“左”、“右”，必须提取。
+    3. 示例: "左上肢血压125/85" -> reading:"125/85", context:"左上肢"。
+    4. 示例: "10:00 BP 120/80" -> reading:"120/80", context:"10:00"。
     
     【核心规则：检查报告】
-    必须按日期严格区分。即使是同一种检查（如血常规），如果是不同日期的，必须分为两条记录。
+    必须按日期严格区分。
     
     【核心规则：中医方案】
     必须提取“治法思路”、“处方”、“疗程反馈”三个部分。
@@ -717,8 +719,7 @@ export async function* extractMedicalRecordStream(
           "date": "YYYY-MM-DD", 
           "reading": "收缩压/舒张压 (如 120/80)", 
           "heartRate": "心率 (数值)", 
-          "location": "位置 (如 左手)",
-          "context": "备注" 
+          "context": "必须包含左/右侧、时间点等备注信息" 
         }
       ]
     }
@@ -731,8 +732,10 @@ export async function* extractMedicalRecordStream(
     // Cap input size just in case, though 50k is usually fine for 128k context models
     const safeText = fullText.length > 50000 ? fullText.slice(0, 50000) + "...(truncated)" : fullText;
 
+    // FIX: Do not fallback to settings.model (which might be Pro/Slow).
+    // Use settings.organizeModel or the default constant (Flash).
     let payload: any = {
-        model: settings.model || "gpt-3.5-turbo",
+        model: settings.organizeModel || DEFAULT_ORGANIZE_MODEL,
         messages: [
             { role: "system", content: instruction },
             { role: "user", content: `待处理文本：\n\n${safeText}` }
@@ -795,24 +798,110 @@ export const reconstructMedicalRecordFromText = async (fullText: string, setting
 };
 
 export const generateStructuredMedicalUpdate = async (conversationHistoryOrRawText: string, existingRecord: MedicalRecord, settings: AISettings, userInstructions: string = ""): Promise<string> => {
-    // Keep this for chat-based updates (smaller payload)
     if (!settings.apiKey) throw new Error("API Key missing");
     
+    const today = new Date().toISOString().split('T')[0];
+
     const instruction = `
-    任务：作为医疗数据专员，请分析输入文本，提取【新增】或【更新】的医疗数据。
-    输出必须是 JSON 对象，包含 "westernReports", "tcmTreatments", "vitalSigns" 数组。
-    额外指令：${userInstructions}
-    不要输出 JSON 以外的任何文本。
+    任务：你是一位高级医疗信息管理员。请分析用户的【最新对话/输入】内容，对患者的【现有病历】进行**增量更新 (Update) 与 智能演变 (Evolve)**。
+    
+    【核心指令】
+    1.  **语境感知与相对时间推断**: 
+        -   参考当前日期: ${today}。
+        -   如果文中提到“昨天”、“前天”、“上周五”，必须将其转换为具体的 YYYY-MM-DD 格式。
+        -   如果文中提到“5号”、“12月5日”但未提年份，请根据当前日期或上下文逻辑推断年份。
+    
+    2.  **严格的时间排序规则 (Chronological Sort)**:
+        -   所有列表型数据（westernReports, tcmTreatments, vitalSigns）输出时，**必须严格按照日期升序排列 (Oldest to Newest)**。即：最早的记录在前，最新的记录在后。
+        -   这是为了确保病历显示的时间轴逻辑正确。请务必检查每一项的 date 字段。
+    
+    3.  **冲突处理与修正**:
+        -   如果新输入是对旧记录的修正（例如：“上次说的血压不是120，是140”），请直接输出修正后的正确值。
+        -   如果新输入与旧记录冲突，且明确表示旧记录有误，以新输入为准。
+    
+    4.  **继往开来 (Merge Context)**：
+        -   对于叙述性字段（如“现病史”、“主诉”、“刻下症”），将【新信息】有机地融合进旧内容，形成一段连贯的叙述。
+        -   **禁止**简单丢弃旧信息，除非新信息明确表示旧症状已愈或无效。
+    
+    JSON 输出结构 (请严格遵守字段名):
+    {
+      "basicInfo": { "name": "...", "gender": "...", "age": "..." }, // 仅当有新基本信息时输出
+      "chiefComplaint": "主诉内容 (融合更新)",
+      "historyOfPresentIllness": "现病史详情 (完整时间线，融合更新)",
+      "pastHistory": "既往史 (如有补充)",
+      "allergies": "过敏史",
+      "currentSymptoms": {
+        "coldHeat": "寒热", 
+        "sweat": "汗液", 
+        "headBody": "头身胸腹", 
+        "stoolsUrine": "二便", 
+        "diet": "饮食", 
+        "sleep": "睡眠", 
+        "emotion": "情志", 
+        "gynecology": "妇科", 
+        "patientFeedback": "患者主观反馈"
+      },
+      "physicalExam": {
+        "tongue": "舌象描述 (更新为最新状态)",
+        "pulse": "脉象描述 (更新为最新状态)",
+        "general": "其他查体"
+      },
+      "westernReports": [
+        { "date": "YYYY-MM-DD", "item": "项目名称", "result": "结果详情" }
+      ],
+      "tcmTreatments": [
+        { 
+          "date": "YYYY-MM-DD", 
+          "prescription": "处方内容",
+          "strategy": "治法思路",
+          "feedback": "疗程反馈"
+        }
+      ],
+      "vitalSigns": [
+        { 
+          "date": "YYYY-MM-DD", 
+          "reading": "收缩压/舒张压 (如 120/80)", 
+          "heartRate": "心率 (数值)", 
+          "context": "必须包含左/右侧、时间点等备注信息" 
+        }
+      ]
+    }
+    
+    注意：
+    - 对于文本字段（Text Fields）：输出的是**合并更新后**的完整文本。
+    - 对于列表字段（Arrays）：输出的是**新增**的条目。如果需要修正旧条目，也请作为新条目输出（UI层会处理展示）。
+    - **严禁**输出 Markdown 或任何解释性文本，只输出纯 JSON。
+    
+    额外用户指令：${userInstructions}
     `;
 
-    let payload: any = {
-        model: settings.model || "gpt-3.5-turbo",
-        messages: [{ role: "system", content: instruction }, { role: "user", content: conversationHistoryOrRawText }],
-        stream: false,
-        temperature: 0,
-        max_tokens: 4000,
-        response_format: { type: "json_object" } // FORCE JSON MODE HERE TOO
+    // Serialize existing relevant data to help AI deduplicate and provide context
+    // IMPORTANT: Send FULL context for narrative fields to allow merging
+    const contextPayload = {
+        current_date_reference: today,
+        existing_basic_info: existingRecord.basicInfo,
+        existing_complaint: existingRecord.chiefComplaint,
+        existing_hpi: existingRecord.historyOfPresentIllness, // Full HPI
+        existing_symptoms: existingRecord.currentSymptoms,    // Full Symptoms
+        existing_physical: existingRecord.physicalExam,
+        existing_vitals_summary: existingRecord.physicalExam.bloodPressureReadings.slice(-10), // Context for dup check
+        existing_labs_summary: existingRecord.auxExams.labResults.slice(-5),
+        existing_plans_summary: existingRecord.diagnosis.treatmentPlans.slice(-5),
+        new_input_text: conversationHistoryOrRawText
     };
+
+    let payload: any = {
+        model: settings.organizeModel || DEFAULT_ORGANIZE_MODEL,
+        messages: [
+            { role: "system", content: instruction }, 
+            { role: "user", content: `Context & Input Payload:\n${JSON.stringify(contextPayload)}` }
+        ],
+        stream: false,
+        temperature: 0.1, // Slightly higher than 0 to allow creative merging
+        max_tokens: 8000,
+        response_format: { type: "json_object" } 
+    };
+    
     payload = cleanPayloadForModel(payload); 
     const res = await fetchWithRetry(`${getBaseUrl(settings.apiBaseUrl)}/chat/completions`, { method: "POST", headers: getHeaders(settings.apiKey), body: JSON.stringify(payload) });
     const data = await res.json();
@@ -839,7 +928,7 @@ export const summarizeMessages = async (messages: any[], settings: AISettings): 
     try {
         const url = `${getBaseUrl(settings.apiBaseUrl)}/chat/completions`;
         let payload: any = {
-            model: settings.model || "gpt-3.5-turbo",
+            model: settings.organizeModel || DEFAULT_ORGANIZE_MODEL,
             messages: [{ role: "system", content: "Summarize conversation." }, { role: "user", content: contentToSummarize }],
             temperature: 0.3
         };

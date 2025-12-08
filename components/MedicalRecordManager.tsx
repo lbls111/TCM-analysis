@@ -24,9 +24,7 @@ const tryParseOrFixJson = (jsonStr: string): any => {
     } catch (e) {
         // Attempt aggressive fixes
         let fixed = jsonStr.trim();
-        // 1. Remove trailing comma in arrays/objects
         fixed = fixed.replace(/,\s*([\]}])/g, '$1');
-        // 2. Close unclosed braces/brackets (simple heuristic)
         const openBraces = (fixed.match(/{/g) || []).length;
         const closeBraces = (fixed.match(/}/g) || []).length;
         const openBrackets = (fixed.match(/\[/g) || []).length;
@@ -34,7 +32,7 @@ const tryParseOrFixJson = (jsonStr: string): any => {
         
         fixed += '}'.repeat(Math.max(0, openBraces - closeBraces));
         fixed += ']'.repeat(Math.max(0, openBrackets - closeBrackets));
-        fixed += '}'.repeat(Math.max(0, openBraces - closeBraces - (fixed.match(/}/g)||[]).length + closeBraces)); // Re-check braces
+        fixed += '}'.repeat(Math.max(0, openBraces - closeBraces - (fixed.match(/}/g)||[]).length + closeBraces)); 
 
         try {
             return JSON.parse(fixed);
@@ -48,13 +46,10 @@ const tryParseOrFixJson = (jsonStr: string): any => {
 // --- Helper: Regex Fallback for Vitals ---
 const extractVitalsByRegex = (text: string): any[] => {
     const results: any[] = [];
-    // Matches patterns like: 120/80, 120/80mmHg, BP 120/80
-    // Captures: 1=Date(opt), 3=BP, 4=HR(opt)
     const bpRegex = /(?:(\d{4}[-./年]\d{1,2}[-./月]\d{1,2}[日]?)|)\s*.*?(?:BP|血压|Bp).*?[:：]?\s*(\d{2,3}\s*[\/／]\s*\d{2,3})\s*(?:mmhg)?(?:\s*[,，]?\s*(?:HR|心率|P).*?[:：]?\s*(\d{2,3}))?/gi;
     
     let match;
     while ((match = bpRegex.exec(text)) !== null) {
-        // Extract context (surrounding text) to find "left/right" etc.
         const contextStart = Math.max(0, match.index - 20);
         const contextEnd = Math.min(text.length, match.index + match[0].length + 10);
         const contextStr = text.substring(contextStart, contextEnd);
@@ -93,9 +88,7 @@ const CloudRecordArchiveModal: React.FC<{
     const loadArchives = async () => {
         setLoading(true);
         try {
-            // Fetch all sessions (including medical records)
             const allSessions = await fetchCloudChatSessions(settings);
-            // Filter for medical record snapshots
             const records = allSessions.filter(s => s.id.startsWith('medical_record_master_'));
             setArchives(records);
         } catch (e) {
@@ -208,15 +201,9 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   const [progress, setProgress] = useState({ current: 0, total: 0, stage: '' });
   const [logs, setLogs] = useState<string[]>([]);
   
-  // Tabs State
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'knowledge'>('dashboard');
-  const [dashboardSection, setDashboardSection] = useState<'timeline' | 'vitals' | 'western' | 'tcm'>('timeline');
-
   const [showSchemaError, setShowSchemaError] = useState(false);
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [showAutoRunToast, setShowAutoRunToast] = useState(false);
-  const [isDeepExtracting, setIsDeepExtracting] = useState(false);
-  const [deepExtractProgress, setDeepExtractProgress] = useState('');
   
   // Archive Modal State
   const [showArchiveModal, setShowArchiveModal] = useState(false);
@@ -225,7 +212,6 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   const [editContent, setEditContent] = useState('');
 
   const abortControllerRef = useRef<AbortController | null>(null);
-  const deepExtractAbortControllerRef = useRef<AbortController | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   // Persistence
@@ -287,16 +273,6 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
       }
   };
 
-  const handleStopDeepExtraction = () => {
-      if (deepExtractAbortControllerRef.current) {
-          deepExtractAbortControllerRef.current.abort();
-          deepExtractAbortControllerRef.current = null;
-          addLog("🛑 用户手动停止深度提取");
-          setIsDeepExtracting(false);
-          setDeepExtractProgress('');
-      }
-  };
-
   const smartTextSplitter = (text: string): string[] => {
       if (!text) return [];
       const mergedText = text.replace(/(?<![。！？.!?;：:])\n(?!\s*[-•\d\u2022])/g, ' ');
@@ -325,144 +301,6 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
       return chunks;
   };
 
-  // === NEW: Dual-Engine Fast Extraction ===
-  const handleFastExtraction = async () => {
-      if (record.knowledgeChunks.length === 0) {
-          alert("知识库为空，无法进行提取。");
-          return;
-      }
-      if (!settings.apiKey) {
-          alert("请先配置 API Key");
-          return;
-      }
-
-      setIsDeepExtracting(true);
-      setDeepExtractProgress('连接 AI...');
-      
-      const controller = new AbortController();
-      deepExtractAbortControllerRef.current = controller;
-
-      // Combine all text (Limit to 50k chars for safety, usually covers entire history)
-      const allText = record.knowledgeChunks.map(c => c.content).join('\n\n').slice(0, 50000);
-      const newRecord = JSON.parse(JSON.stringify(record));
-      
-      let receivedBytes = 0;
-      let rawJsonBuffer = "";
-
-      try {
-          addLog(`🚀 启动极速全量扫描 (Context: ${allText.length} chars)...`);
-          
-          // Use Streaming to keep connection alive and bypass browser timeouts
-          for await (const chunk of extractMedicalRecordStream(allText, settings, controller.signal)) {
-              rawJsonBuffer += chunk;
-              receivedBytes += chunk.length;
-              setDeepExtractProgress(`接收数据中... (${(receivedBytes/1024).toFixed(1)} KB)`);
-          }
-
-          addLog(`⚡ 数据接收完成，正在解析...`);
-          
-          // Use robust extractor + fixer
-          const jsonStr = extractJsonFromText(rawJsonBuffer);
-          let jsonPayload: any = tryParseOrFixJson(jsonStr);
-          
-          if (!jsonPayload) {
-              addLog(`⚠️ JSON 解析彻底失败，切换至纯正则模式兜底。`);
-              jsonPayload = {};
-          } else {
-              addLog(`✅ JSON 解析成功。`);
-          }
-
-          let updateCount = 0;
-          
-          // 1. Process Western Reports (AI)
-          if (jsonPayload.westernReports?.length) {
-              jsonPayload.westernReports.forEach((item: any) => {
-                  newRecord.auxExams.labResults.push({ 
-                      id: `lab-fast-${Date.now()}-${Math.random()}`, 
-                      date: item.date || new Date().toISOString().split('T')[0], 
-                      item: item.item, 
-                      result: item.result 
-                  });
-              });
-              updateCount += jsonPayload.westernReports.length;
-          }
-          
-          // 2. Process TCM Treatments (AI)
-          if (jsonPayload.tcmTreatments?.length) {
-              jsonPayload.tcmTreatments.forEach((item: any) => {
-                  let fullPlan = item.prescription || item.plan || "";
-                  if (item.strategy) fullPlan = `【治法思路】${item.strategy}\n\n【处方】${fullPlan}`;
-                  if (item.feedback) fullPlan += `\n\n【疗程反馈】${item.feedback}`;
-                  
-                  newRecord.diagnosis.treatmentPlans.push({ 
-                      id: `plan-fast-${Date.now()}-${Math.random()}`, 
-                      date: item.date || new Date().toISOString().split('T')[0], 
-                      plan: fullPlan.trim() 
-                  });
-              });
-              updateCount += jsonPayload.tcmTreatments.length;
-          }
-          
-          // 3. Process Vital Signs (AI + Regex Fallback Dual-Engine)
-          // Engine A: AI Results
-          let vitalSigns = Array.isArray(jsonPayload.vitalSigns) ? [...jsonPayload.vitalSigns] : [];
-          
-          // Engine B: Regex Fallback (Always run this for vitals as AI often misses them in complex text)
-          const regexVitals = extractVitalsByRegex(allText);
-          if (regexVitals.length > 0) {
-              addLog(`🔎 正则引擎发现 ${regexVitals.length} 条体征数据，正在合并...`);
-              // Simple de-duplication strategy: If Regex found something AI missed (based on reading value)
-              const aiReadings = new Set(vitalSigns.map((v:any) => v.reading));
-              regexVitals.forEach(rv => {
-                  if (!aiReadings.has(rv.reading)) {
-                      vitalSigns.push(rv);
-                  }
-              });
-          }
-
-          if (vitalSigns.length > 0) {
-              vitalSigns.forEach((item: any) => {
-                  const date = (item.date && item.date !== 'Unknown') ? item.date : new Date().toISOString().split('T')[0];
-                  const reading = item.reading || "";
-                  const heartRate = item.heartRate ? String(item.heartRate) : "";
-                  
-                  const details = [];
-                  if (item.location) details.push(item.location);
-                  if (item.context) details.push(item.context);
-                  const fullContext = details.join(' · ');
-
-                  newRecord.physicalExam.bloodPressureReadings.push({ 
-                      id: `vital-fast-${Date.now()}-${Math.random()}`, 
-                      date: date, 
-                      reading: reading, 
-                      heartRate: heartRate, 
-                      context: fullContext || "常规测量" 
-                  });
-              });
-              updateCount += vitalSigns.length;
-          }
-
-          if (updateCount > 0) {
-              onUpdate(newRecord);
-              addLog(`🎉 极速提取完成！共发现 ${updateCount} 条结构化数据。`);
-          } else {
-              addLog("⚠️ 提取完成，但各项数据为空。请检查病历文本。");
-          }
-
-      } catch (e: any) {
-          if (e.name === 'AbortError') {
-              addLog("🛑 用户中断了扫描。");
-          } else {
-              addLog(`❌ 提取出错: ${e.message}`);
-              console.error(e);
-          }
-      } finally {
-          setIsDeepExtracting(false);
-          setDeepExtractProgress('');
-          deepExtractAbortControllerRef.current = null;
-      }
-  };
-
   const handleDecomposeAndStore = async (overrideInput?: string) => {
       if (!settings.apiKey) { alert("错误：请先配置 API Key。"); return; }
       const textToProcess = overrideInput || rawInput;
@@ -481,7 +319,16 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
           
           try {
               jsonPayload = JSON.parse(textToProcess);
-              if (jsonPayload.westernReports || jsonPayload.tcmTreatments || jsonPayload.vitalSigns) {
+              // Simple check if it looks like our structured update payload
+              // The new agent returns things like chiefComplaint, historyOfPresentIllness, etc.
+              // Or the classic westernReports, etc.
+              if (
+                  jsonPayload.westernReports || 
+                  jsonPayload.tcmTreatments || 
+                  jsonPayload.vitalSigns || 
+                  jsonPayload.chiefComplaint ||
+                  jsonPayload.historyOfPresentIllness
+              ) {
                   isJsonImport = true;
                   addLog("🧠 识别到结构化 JSON 数据，直接录入...");
               }
@@ -489,12 +336,13 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
 
           // STEP 2: If input is raw text, try to extract structure via AI first
           if (!isJsonImport) {
-              addLog("🧠 正在使用 AI 提取结构化数据 (血压/检验/处方)...");
+              addLog("🧠 正在使用 AI 基于现有病历进行增量更新...");
+              // Now uses the updated prompt which includes old record context
               const extractedJsonStr = await generateStructuredMedicalUpdate(textToProcess, record, settings);
               try {
                   jsonPayload = JSON.parse(extractedJsonStr);
                   isJsonImport = true;
-                  addLog("✅ 结构化提取成功！准备分流数据...");
+                  addLog("✅ 增量更新数据生成成功！准备合并...");
               } catch(e) {
                   addLog("⚠️ 结构化提取失败，将仅作为普通文本存储。");
               }
@@ -505,33 +353,122 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
           if (isJsonImport && jsonPayload) {
               const newRecord = { ...record };
               
+              // --- 1. Basic Info & History (Narrative fields overwrite because AI has merged them) ---
+              if (jsonPayload.basicInfo && Object.keys(jsonPayload.basicInfo).length > 0) {
+                  newRecord.basicInfo = { ...newRecord.basicInfo, ...jsonPayload.basicInfo };
+                  // Note: usually don't need to RAG basic info updates unless it changed
+              }
+              if (jsonPayload.chiefComplaint) {
+                  newRecord.chiefComplaint = jsonPayload.chiefComplaint;
+                  textChunks.push(`【主诉更新】${jsonPayload.chiefComplaint}`);
+              }
+              if (jsonPayload.historyOfPresentIllness) {
+                  newRecord.historyOfPresentIllness = jsonPayload.historyOfPresentIllness;
+                  textChunks.push(`【现病史更新】${jsonPayload.historyOfPresentIllness}`);
+              }
+              if (jsonPayload.pastHistory) {
+                  newRecord.pastHistory = jsonPayload.pastHistory;
+                  textChunks.push(`【既往史更新】${jsonPayload.pastHistory}`);
+              }
+              if (jsonPayload.allergies) {
+                  newRecord.allergies = jsonPayload.allergies;
+                  textChunks.push(`【过敏史更新】${jsonPayload.allergies}`);
+              }
+
+              // --- 2. Symptoms (Overwrite because AI merged them) ---
+              if (jsonPayload.currentSymptoms) {
+                  const sym = jsonPayload.currentSymptoms;
+                  // Merge deep fields if AI only returned partial (though prompt asks for full)
+                  newRecord.currentSymptoms = { ...newRecord.currentSymptoms, ...sym };
+                  let symText = "【刻下症更新】";
+                  Object.entries(sym).forEach(([k, v]) => { if(v) symText += `${k}:${v}; `; });
+                  textChunks.push(symText);
+              }
+
+              // --- 3. Physical Exam (Tongue/Pulse - Overwrite) ---
+              if (jsonPayload.physicalExam) {
+                  if (jsonPayload.physicalExam.tongue) {
+                      newRecord.physicalExam.tongue = jsonPayload.physicalExam.tongue;
+                      textChunks.push(`【舌象更新】${jsonPayload.physicalExam.tongue}`);
+                  }
+                  if (jsonPayload.physicalExam.pulse) {
+                      newRecord.physicalExam.pulse = jsonPayload.physicalExam.pulse;
+                      textChunks.push(`【脉象更新】${jsonPayload.physicalExam.pulse}`);
+                  }
+                  if (jsonPayload.physicalExam.general) {
+                      newRecord.physicalExam.general = jsonPayload.physicalExam.general;
+                      textChunks.push(`【查体更新】${jsonPayload.physicalExam.general}`);
+                  }
+              }
+
+              // --- 4. Lists (Aggregated for RAG, Individual for Struct) ---
+              
+              // A. Western Reports (Labs) - Group by Date
               if (jsonPayload.westernReports?.length) {
+                  const labsByDate = new Map<string, string[]>();
+                  
                   jsonPayload.westernReports.forEach((item: any) => {
+                      // 1. Structured Store (Keep Atomic)
                       const lab: LabResult = { id: `lab-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], item: item.item || '项目', result: item.result || '' };
                       newRecord.auxExams.labResults.push(lab);
-                      textChunks.push(`【检查】${lab.date} ${lab.item}: ${lab.result}`);
+                      
+                      // 2. Prepare for Aggregation
+                      if (!labsByDate.has(lab.date)) labsByDate.set(lab.date, []);
+                      labsByDate.get(lab.date)!.push(`${lab.item}: ${lab.result}`);
                   });
-                  addLog(`📊 录入 ${jsonPayload.westernReports.length} 条检验报告`);
+
+                  // 3. Generate Aggregated Text Chunk
+                  labsByDate.forEach((items, date) => {
+                      textChunks.push(`【检查报告】${date} 汇总:\n${items.join('; ')}`);
+                  });
+                  addLog(`📊 录入 ${jsonPayload.westernReports.length} 条新检验报告`);
               }
 
+              // B. TCM Treatments - Usually one per day, but safe to group
               if (jsonPayload.tcmTreatments?.length) {
+                  const plansByDate = new Map<string, string[]>();
+                  
                   jsonPayload.tcmTreatments.forEach((item: any) => {
-                      const plan: TreatmentPlanEntry = { id: `plan-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], plan: item.plan || '' };
+                      // 1. Structured Store
+                      const plan: TreatmentPlanEntry = { id: `plan-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], plan: item.plan || item.prescription || '' };
                       newRecord.diagnosis.treatmentPlans.push(plan);
-                      textChunks.push(`【中医】${plan.date} 方案: ${plan.plan}`);
+                      
+                      // 2. Prepare
+                      if (!plansByDate.has(plan.date)) plansByDate.set(plan.date, []);
+                      plansByDate.get(plan.date)!.push(plan.plan);
                   });
-                  addLog(`🌿 录入 ${jsonPayload.tcmTreatments.length} 条中医方案`);
+                  
+                  // 3. Generate
+                  plansByDate.forEach((items, date) => {
+                      textChunks.push(`【中医方案】${date}:\n${items.join('\n')}`);
+                  });
+                  addLog(`🌿 录入 ${jsonPayload.tcmTreatments.length} 条新中医方案`);
               }
 
+              // C. Vital Signs (Vitals) - Group by Date (Requested Feature)
               if (jsonPayload.vitalSigns?.length) {
+                  const vitalsByDate = new Map<string, string[]>();
+
                   jsonPayload.vitalSigns.forEach((item: any) => {
-                      const bp: BloodPressureReading = { id: `vital-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], reading: item.reading || '', heartRate: '', context: `${item.type || ''} ${item.context || ''}`.trim() };
+                      // 1. Structured Store
+                      const bp: BloodPressureReading = { id: `vital-${Date.now()}-${Math.random()}`, date: item.date || new Date().toISOString().split('T')[0], reading: item.reading || '', heartRate: item.heartRate || '', context: `${item.type || ''} ${item.context || ''}`.trim() };
                       newRecord.physicalExam.bloodPressureReadings.push(bp);
-                      textChunks.push(`【体征】${bp.date} ${bp.context}: ${bp.reading}`);
+                      
+                      // 2. Prepare for Aggregation
+                      const detail = `${bp.context ? bp.context + ' ' : ''}${bp.reading}${bp.heartRate ? ' (HR:'+bp.heartRate+')' : ''}`;
+                      if (!vitalsByDate.has(bp.date)) vitalsByDate.set(bp.date, []);
+                      vitalsByDate.get(bp.date)!.push(detail);
                   });
-                  addLog(`❤️ 录入 ${jsonPayload.vitalSigns.length} 条体征数据`);
+
+                  // 3. Generate Aggregated Text Chunk
+                  vitalsByDate.forEach((items, date) => {
+                      textChunks.push(`【体征追踪】${date} 监测记录:\n${items.join('; ')}`);
+                  });
+                  addLog(`❤️ 录入 ${jsonPayload.vitalSigns.length} 条新体征数据`);
               }
+              
               onUpdate(newRecord); // Update structured UI immediately
+              addLog("✅ 结构化数据已合并到当前界面。");
           } 
           
           if (!isJsonImport) {
@@ -539,10 +476,10 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
               textChunks = smartTextSplitter(textToProcess);
           }
 
-          // STEP 3: Vectorization (RAG)
+          // STEP 3: Vectorization (RAG) - Only if we have text chunks generated
           if (textChunks.length > 0) {
               const total = textChunks.length;
-              addLog(`⚡ 生成 ${total} 个知识片段，存入向量库...`);
+              addLog(`⚡ 生成 ${total} 个更新片段，存入向量库...`);
               const newChunks: MedicalKnowledgeChunk[] = [];
               const BATCH_SIZE = 20; 
               
@@ -559,7 +496,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                       newChunks.push({
                           id: `chunk-${Date.now()}-${i + idx}`,
                           content: text,
-                          tags: isJsonImport ? ['AI提取', '结构化'] : ['手动导入'], 
+                          tags: isJsonImport ? ['AI更新', '结构化'] : ['手动导入'], 
                           embedding: batchEmbeddings[idx], 
                           sourceType: isJsonImport ? 'import' : 'manual',
                           createdAt: Date.now()
@@ -570,9 +507,9 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
               
               // Merge chunks
               onUpdate((prev) => ({ ...prev, knowledgeChunks: [...prev.knowledgeChunks, ...newChunks] }));
-              addLog(`🎉 完成！结构化数据已归档，知识库已更新。`);
+              addLog(`🎉 完成！病历已更新并归档。`);
           } else {
-             addLog("✅ 结构化数据已录入 (无新增文本片段)。");
+             if (isJsonImport) addLog("⚠️ 没有生成新的文本片段 (可能是纯数据更新)。");
           }
           
           setRawInput(''); 
@@ -606,133 +543,14 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
   const handleSaveEdit = () => { if (!editingChunkId) return; onUpdate({ ...record, knowledgeChunks: record.knowledgeChunks.map(c => c.id === editingChunkId ? { ...c, content: editContent, tags: [...c.tags, '已编辑'], embedding: undefined } : c) }); setEditingChunkId(null); setEditContent(''); };
   
   const renderEmptyState = (text: string) => (
-      <div className="flex flex-col items-center justify-center py-10 text-slate-400 gap-3">
-          <div className="text-3xl opacity-50">📭</div>
-          <div className="text-sm">{text}</div>
-          {record.knowledgeChunks.length > 0 && (
-              <div className="mt-2 flex flex-col items-center gap-2">
-                  <button 
-                      onClick={isDeepExtracting ? handleStopDeepExtraction : handleFastExtraction}
-                      className={`text-xs px-4 py-2 rounded-full border flex items-center gap-2 font-bold transition-all shadow-sm ${
-                          isDeepExtracting 
-                          ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' 
-                          : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'
-                      }`}
-                  >
-                      {isDeepExtracting ? <span className="animate-spin">🛑</span> : <span>⚡</span>}
-                      {isDeepExtracting ? '停止' : '一键全量提取 (Fast)'}
-                  </button>
-                  {isDeepExtracting && deepExtractProgress && (
-                      <span className="text-[10px] text-indigo-500 font-mono animate-pulse">{deepExtractProgress}</span>
-                  )}
-              </div>
-          )}
+      <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-3 min-h-[300px]">
+          <div className="text-4xl opacity-50">📭</div>
+          <div className="text-sm font-bold">{text}</div>
+          <p className="text-xs max-w-xs text-center opacity-70">
+              请在“AI 问答”界面发送病历文本，并点击右上角的【整理】按钮自动录入。
+          </p>
       </div>
   );
-
-  const renderTimeline = () => {
-    // Combine all events
-    const events: { date: string, type: string, content: string, sub: string, color: string }[] = [];
-    
-    record.physicalExam.bloodPressureReadings.forEach(bp => events.push({
-        date: bp.date, type: '体征', content: bp.reading, sub: bp.context || '常规测量', color: 'border-rose-400 bg-rose-50 text-rose-700'
-    }));
-    record.auxExams.labResults.forEach(lab => events.push({
-        date: lab.date, type: '检查', content: lab.item, sub: lab.result, color: 'border-blue-400 bg-blue-50 text-blue-700'
-    }));
-    record.diagnosis.treatmentPlans.forEach(plan => events.push({
-        date: plan.date, type: '中医', content: '中医诊疗方案', sub: plan.plan, color: 'border-emerald-400 bg-emerald-50 text-emerald-700'
-    }));
-
-    // Sort descending by date
-    events.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-    if (events.length === 0) return renderEmptyState("暂无历史数据记录");
-
-    return (
-        <div className="space-y-6 pl-4 border-l-2 border-slate-200 ml-4 py-4 relative">
-            {events.map((evt, i) => (
-                <div key={i} className="relative animate-in slide-in-from-left-2 duration-300">
-                    <div className={`absolute -left-[23px] top-1 w-3.5 h-3.5 rounded-full border-2 border-white shadow-sm box-content ${evt.color.split(' ')[0].replace('border-', 'bg-')}`}></div>
-                    <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-black text-slate-500 font-mono">{evt.date}</span>
-                        <span className={`text-[10px] font-bold px-1.5 rounded ${evt.color.split(' ')[1]} ${evt.color.split(' ')[2]}`}>{evt.type}</span>
-                    </div>
-                    <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm text-sm hover:shadow-md transition-shadow">
-                        <div className="font-bold text-slate-800">{evt.content}</div>
-                        <div className="text-slate-500 mt-1 text-xs leading-relaxed whitespace-pre-wrap">{evt.sub}</div>
-                    </div>
-                </div>
-            ))}
-        </div>
-    );
-  };
-
-  const renderDashboard = () => {
-      return (
-          <div className="h-full flex flex-col bg-slate-50/50">
-             <div className="flex border-b border-slate-200 bg-white overflow-x-auto">
-                 <button onClick={() => setDashboardSection('timeline')} className={`flex-1 py-3 px-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${dashboardSection === 'timeline' ? 'border-purple-600 text-purple-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>📅 综合时间轴</button>
-                 <button onClick={() => setDashboardSection('vitals')} className={`flex-1 py-3 px-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${dashboardSection === 'vitals' ? 'border-rose-500 text-rose-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>❤️ 体征</button>
-                 <button onClick={() => setDashboardSection('western')} className={`flex-1 py-3 px-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${dashboardSection === 'western' ? 'border-blue-500 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>🧪 检查</button>
-                 <button onClick={() => setDashboardSection('tcm')} className={`flex-1 py-3 px-2 text-sm font-bold border-b-2 transition-colors whitespace-nowrap ${dashboardSection === 'tcm' ? 'border-emerald-500 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>🌿 中医</button>
-             </div>
-             
-             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                 {dashboardSection === 'timeline' && renderTimeline()}
-                 
-                 {dashboardSection === 'vitals' && (
-                     <div className="space-y-4">
-                         {record.physicalExam.bloodPressureReadings.length === 0 ? renderEmptyState("暂无体征数据") : (
-                             record.physicalExam.bloodPressureReadings.map((bp, i) => (
-                                 <div key={i} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex justify-between items-center">
-                                     <div>
-                                         <div className="text-xs text-slate-400 font-bold">{bp.date}</div>
-                                         <div className="text-sm font-bold text-slate-700 mt-1">{bp.context || '常规测量'}</div>
-                                     </div>
-                                     <div className="text-right">
-                                         <div className="text-xl font-black text-rose-600 font-mono">{bp.reading}</div>
-                                         <div className="text-xs text-slate-400">{bp.heartRate ? `HR: ${bp.heartRate}` : 'mmHg'}</div>
-                                     </div>
-                                 </div>
-                             ))
-                         )}
-                     </div>
-                 )}
-                 {dashboardSection === 'western' && (
-                     <div className="space-y-3">
-                         {record.auxExams.labResults.length === 0 ? renderEmptyState("暂无检查报告") : (
-                             record.auxExams.labResults.map((lab, i) => (
-                                 <div key={i} className="bg-white p-3 rounded-lg border border-slate-100 shadow-sm text-sm">
-                                     <div className="flex justify-between mb-1">
-                                         <span className="font-bold text-slate-700">{lab.item}</span>
-                                         <span className="text-xs font-mono text-slate-400">{lab.date}</span>
-                                     </div>
-                                     <div className="text-slate-600 bg-slate-50 p-2 rounded">{lab.result}</div>
-                                 </div>
-                             ))
-                         )}
-                     </div>
-                 )}
-                 {dashboardSection === 'tcm' && (
-                     <div className="space-y-6 pl-4 border-l-2 border-emerald-100 ml-2 py-2">
-                         {record.diagnosis.treatmentPlans.length === 0 ? renderEmptyState("暂无中医方案") : (
-                             record.diagnosis.treatmentPlans.map((plan, i) => (
-                                 <div key={i} className="relative">
-                                     <div className="absolute -left-[21px] top-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white shadow-sm"></div>
-                                     <div className="text-xs font-bold text-emerald-600 mb-1">{plan.date}</div>
-                                     <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-                                         {plan.plan}
-                                     </div>
-                                 </div>
-                             ))
-                         )}
-                     </div>
-                 )}
-             </div>
-          </div>
-      );
-  };
 
   return (
     <div className="h-full w-full flex flex-col md:flex-row gap-6 p-4 overflow-hidden relative">
@@ -750,27 +568,26 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
           </div>
       )}
 
-      {/* Main Content Area */}
+      {/* Main Content Area - Knowledge Base Only (Dashboard removed) */}
       <div className="flex-1 bg-white rounded-[2rem] shadow-xl border border-slate-200 flex flex-col overflow-hidden order-2 md:order-1">
           {/* Main Header */}
           <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center shrink-0">
               <div className="flex items-center gap-4">
-                  <div className="flex gap-1 bg-slate-200/50 p-1 rounded-lg">
-                      <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'dashboard' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>全览看板</button>
-                      <button onClick={() => setActiveTab('knowledge')} className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'knowledge' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>RAG 知识库</button>
-                  </div>
-                  {activePatient && <span className="text-xs font-sans font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full hidden md:inline-block">{activePatient.name}</span>}
-                  {isAutoSaving && <span className="text-xs text-indigo-500 animate-pulse">☁️ 同步中...</span>}
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                      <span className="text-2xl">📚</span> RAG 知识库
+                  </h3>
+                  {activePatient && <span className="text-xs font-sans font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full hidden md:inline-block font-bold">{activePatient.name}</span>}
+                  {isAutoSaving && <span className="text-xs text-indigo-500 animate-pulse font-mono">☁️ Saving...</span>}
               </div>
               <div className="flex gap-2">
                   {!activePatient && (
-                      <button onClick={() => setShowArchiveModal(true)} className="text-xs text-indigo-600 font-bold px-3 py-1.5 rounded border border-indigo-200 bg-indigo-50 hover:bg-indigo-100">
+                      <button onClick={() => setShowArchiveModal(true)} className="text-xs text-indigo-600 font-bold px-3 py-1.5 rounded border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 flex items-center gap-1">
                           <span>📂</span> 历史
                       </button>
                   )}
                   {isAdminMode && !activePatient && (
-                      <button onClick={handleSyncToCloud} className="text-xs text-emerald-600 font-bold px-3 py-1.5 rounded border border-emerald-200 bg-emerald-50">
-                          <span>☁️</span> 存档
+                      <button onClick={handleSyncToCloud} className="text-xs text-emerald-600 font-bold px-3 py-1.5 rounded border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 flex items-center gap-1">
+                          <span>☁️</span> 备份
                       </button>
                   )}
                   <button onClick={() => { if(window.confirm('确定清空所有记录吗？')) onUpdate(createEmptyMedicalRecord()); }} className="text-xs text-red-400 hover:text-red-600 font-bold px-3 py-1.5 rounded hover:bg-red-50">清空</button>
@@ -778,34 +595,29 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
           </div>
           
           <div className="flex-1 overflow-hidden relative">
-              {activeTab === 'dashboard' ? renderDashboard() : (
-                  <div className="h-full overflow-y-auto p-4 custom-scrollbar bg-slate-50/50 space-y-3">
-                     {record.knowledgeChunks.length === 0 ? (
-                         <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                             <div className="text-4xl mb-4">📭</div>
-                             <p>知识库为空</p>
-                         </div>
-                     ) : (
-                         record.knowledgeChunks.map(chunk => (
-                             <div key={chunk.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-all group relative">
-                                 <div className="flex flex-wrap gap-2 mb-2 items-center">
-                                     {chunk.tags.map(tag => (
-                                         <span key={tag} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${tag.includes('结构化') ? 'bg-purple-50 text-purple-600 border-purple-100' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{tag}</span>
-                                     ))}
-                                     {chunk.embedding ? <span className="text-[10px] font-bold bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full border border-emerald-100">⚡ 已向量化</span> : <span className="text-[10px] font-bold bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full border border-amber-100">🔸 仅文本</span>}
-                                     <button onClick={() => { setEditingChunkId(chunk.id); setEditContent(chunk.content); }} className="ml-auto text-[10px] font-bold text-indigo-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">✎ 编辑</button>
-                                 </div>
-                                 {editingChunkId === chunk.id ? (
-                                     <div className="space-y-2"><textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="w-full p-2 border border-indigo-200 rounded-lg text-sm outline-none" rows={4}/><div className="flex gap-2 justify-end"><button onClick={() => setEditingChunkId(null)} className="text-xs px-2 py-1 rounded bg-slate-100">取消</button><button onClick={handleSaveEdit} className="text-xs px-2 py-1 rounded bg-indigo-600 text-white">保存</button></div></div>
-                                 ) : (
-                                     <p className="text-sm text-slate-700 leading-relaxed font-serif-sc whitespace-pre-wrap">{chunk.content}</p>
-                                 )}
-                                 <button onClick={(e) => handleDeleteChunk(chunk.id, e)} className="absolute top-2 right-2 w-6 h-6 bg-red-50 text-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-100 z-10">✕</button>
+              <div className="h-full overflow-y-auto p-4 custom-scrollbar bg-slate-50/50 space-y-3">
+                 {record.knowledgeChunks.length === 0 ? (
+                     renderEmptyState("知识库为空")
+                 ) : (
+                     record.knowledgeChunks.map(chunk => (
+                         <div key={chunk.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-all group relative">
+                             <div className="flex flex-wrap gap-2 mb-2 items-center">
+                                 {chunk.tags.map(tag => (
+                                     <span key={tag} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${tag.includes('结构化') ? 'bg-purple-50 text-purple-600 border-purple-100' : 'bg-indigo-50 text-indigo-600 border-indigo-100'}`}>{tag}</span>
+                                 ))}
+                                 {chunk.embedding ? <span className="text-[10px] font-bold bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full border border-emerald-100">⚡ 已向量化</span> : <span className="text-[10px] font-bold bg-amber-50 text-amber-600 px-2 py-0.5 rounded-full border border-amber-100">🔸 仅文本</span>}
+                                 <button onClick={() => { setEditingChunkId(chunk.id); setEditContent(chunk.content); }} className="ml-auto text-[10px] font-bold text-indigo-400 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity">✎ 编辑</button>
                              </div>
-                         ))
-                     )}
-                  </div>
-              )}
+                             {editingChunkId === chunk.id ? (
+                                 <div className="space-y-2"><textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} className="w-full p-2 border border-indigo-200 rounded-lg text-sm outline-none shadow-inner" rows={4}/><div className="flex gap-2 justify-end"><button onClick={() => setEditingChunkId(null)} className="text-xs px-2 py-1 rounded bg-slate-100">取消</button><button onClick={handleSaveEdit} className="text-xs px-2 py-1 rounded bg-indigo-600 text-white">保存</button></div></div>
+                             ) : (
+                                 <p className="text-sm text-slate-700 leading-relaxed font-serif-sc whitespace-pre-wrap">{chunk.content}</p>
+                             )}
+                             <button onClick={(e) => handleDeleteChunk(chunk.id, e)} className="absolute top-2 right-2 w-6 h-6 bg-red-50 text-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-100 z-10">✕</button>
+                         </div>
+                     ))
+                 )}
+              </div>
           </div>
       </div>
 
@@ -822,7 +634,7 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
            <div className="flex-1 flex flex-col min-h-0">
                {isProcessing && <div className="h-1 w-full bg-indigo-100"><div className="h-full bg-amber-400 transition-all duration-300 ease-out" style={{ width: progress.total ? `${(progress.current / progress.total) * 100}%` : '0%' }}></div></div>}
                <div className="flex-1 flex flex-col p-4 gap-4 overflow-hidden">
-                   <textarea value={rawInput} onChange={e => setRawInput(e.target.value)} placeholder="在此粘贴任意格式的病历文本。系统会自动提取：&#10;- 血压/心率&#10;- 检验报告&#10;- 中医处方&#10;并生成向量知识库..." disabled={isProcessing} className="flex-1 w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none font-mono leading-relaxed disabled:opacity-50" />
+                   <textarea value={rawInput} onChange={e => setRawInput(e.target.value)} placeholder="在此粘贴任意格式的病历文本。系统会自动提取：&#10;- 主诉/现病史/既往史&#10;- 血压/心率/体征&#10;- 检验报告/中医处方&#10;并生成向量知识库..." disabled={isProcessing} className="flex-1 w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none font-mono leading-relaxed disabled:opacity-50" />
                    <div className="h-32 bg-slate-900 rounded-xl p-3 overflow-y-auto custom-scrollbar border border-slate-800 font-mono text-[10px] leading-relaxed text-emerald-400 shadow-inner">
                        {logs.length === 0 ? <div className="text-slate-600 italic text-center mt-8">等待开始...</div> : logs.map((log, i) => <div key={i} className="border-b border-white/5 pb-0.5 mb-0.5">{log}</div>)}
                        <div ref={logsEndRef} />

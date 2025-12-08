@@ -229,6 +229,7 @@ export interface AISettings {
   apiBaseUrl: string;       // 用户输入的 Base URL (e.g., https://api.openai.com/v1)
   
   model: string;            // 主模型 (Unified Model)
+  organizeModel?: string;   // NEW: Dedicated model for medical record organization (default: gemini-2.5-flash)
   analysisModel?: string;   // Deprecated: Kept for compatibility
   chatModel?: string;       // Deprecated: Kept for compatibility
   embeddingModel?: string;  // NEW: Embedding Model ID

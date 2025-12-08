@@ -1,4 +1,5 @@
 
+
 import { Flavor, Temperature, Constitution, QiDirection, AdministrationMode } from './types';
 
 // ==========================================
@@ -19,6 +20,8 @@ export const DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3";
 // Visitor Default Chat Model (DeepSeek R1 via SiliconFlow)
 // Using exact ID requested by user
 export const VISITOR_DEFAULT_CHAT_MODEL = "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B";
+
+export const DEFAULT_ORGANIZE_MODEL = "gemini-2.5-flash";
 
 // API Retry Settings
 export const DEFAULT_RETRY_DELAY = 1000; // Reduced delay

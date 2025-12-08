@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo, memo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -120,6 +121,83 @@ const FileUploadPreview: React.FC<any> = ({ files, onRemove }) => {
     return (<div className="flex gap-2 p-3 overflow-x-auto border-t border-slate-200 bg-slate-100 rounded-t-xl mx-0">{files.map((f:any) => (<div key={f.id} className="relative group shrink-0 w-24 h-24 rounded-lg border border-slate-300 overflow-hidden bg-white shadow-sm">{f.type === 'image' ? <img src={f.content} className="w-full h-full object-cover" /> : <div className="w-full h-full flex flex-col items-center justify-center text-xs text-slate-600 p-2 bg-slate-50"><span className="text-2xl mb-1">📄</span><span className="truncate w-full text-center font-medium">{f.name}</span></div>}<button onClick={() => onRemove(f.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">✕</button></div>))}</div>);
 };
 
+// Isolated Input Component to prevent re-rendering the whole chat list on typing
+const ChatInputArea = memo(({ onSend, isLoading, onStop, tokenCount, limit, messageCount }: { 
+    onSend: (text: string, files: ChatAttachment[]) => void, 
+    isLoading: boolean, 
+    onStop: () => void,
+    tokenCount: number,
+    limit: number,
+    messageCount: number
+}) => {
+    const [input, setInput] = useState('');
+    const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    const handleSend = () => {
+        if (!input.trim() && attachments.length === 0) return;
+        onSend(input, attachments);
+        setInput('');
+        setAttachments([]);
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    };
+
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0) {
+            const files = e.target.files;
+            const newAttachments: ChatAttachment[] = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const reader = new FileReader();
+                const isImage = file.type.startsWith('image/');
+                const result = await new Promise<string>((resolve) => {
+                    if (isImage) reader.readAsDataURL(file); else reader.readAsText(file);
+                    reader.onload = () => resolve(reader.result as string);
+                });
+                newAttachments.push({ id: `file-${Date.now()}-${Math.random()}`, type: isImage ? 'image' : 'file', name: file.name, content: result, mimeType: file.type });
+            }
+            setAttachments(prev => [...prev, ...newAttachments]);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    return (
+        <div className="p-4 bg-white border-t border-slate-200 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.05)] z-30 shrink-0">
+           <div className="max-w-5xl mx-auto flex flex-col gap-2 relative">
+              <FileUploadPreview files={attachments} onRemove={(id: string) => setAttachments(p => p.filter(x => x.id !== id))} />
+              <div className="flex gap-3 items-end bg-slate-50 p-2 rounded-[1.5rem] border border-slate-200 focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-400 transition-all shadow-sm">
+                  <div className="relative pb-1 pl-1">
+                      <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileSelect} accept="image/*,.txt,.md,.csv,.json" />
+                      <button onClick={() => fileInputRef.current?.click()} className="w-10 h-10 rounded-full bg-slate-200 text-slate-600 hover:bg-indigo-100 hover:text-indigo-600 transition-colors flex items-center justify-center shadow-sm">📎</button>
+                  </div>
+                  <div className="flex-1 relative py-2.5">
+                    <textarea 
+                        ref={textareaRef} 
+                        value={input} 
+                        onChange={e => setInput(e.target.value)} 
+                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
+                        placeholder={isLoading ? "AI 正在思考..." : "输入消息 (Shift+Enter 换行)..."} 
+                        disabled={isLoading} 
+                        className="w-full bg-transparent border-none p-0 text-lg outline-none resize-none font-sans text-slate-900 placeholder-slate-400 min-h-[28px] max-h-[200px] leading-relaxed" 
+                        rows={1} 
+                    />
+                  </div>
+                  {isLoading ? (
+                    <button onClick={onStop} className="w-11 h-11 rounded-full bg-red-100 text-red-600 hover:bg-red-200 flex items-center justify-center transition-all group shrink-0 mb-0.5">■</button>
+                  ) : (
+                    <button onClick={handleSend} disabled={!input.trim() && attachments.length === 0} className="w-11 h-11 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed shrink-0 mb-0.5">➤</button>
+                  )}
+               </div>
+               <div className="flex justify-between items-start">
+                   <TokenCapsule tokenCount={tokenCount} limit={200000} messageCount={messageCount} />
+                   <div className="text-right pt-2"><span className="text-[10px] text-slate-300">LogicMaster AI v3.0 (Markdown Enabled)</span></div>
+               </div>
+           </div>
+        </div>
+    );
+});
+
 interface ChatMessageItemProps {
     message: Message;
     index: number;
@@ -141,10 +219,6 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
 
     // Custom renderer for herbs to make them clickable
     const components = useMemo(() => ({
-        // We can create a custom renderer for text to inject herb links, 
-        // but react-markdown works better with direct markdown.
-        // For herb highlighting inside markdown, we might need a rehype plugin or post-process.
-        // For now, let's stick to standard markdown to fix layout issues first.
         code: ({node, inline, className, children, ...props}: any) => {
              return <code className={`${className} bg-slate-100 text-rose-600 px-1 rounded font-mono text-sm`} {...props}>{children}</code>;
         }
@@ -270,7 +344,7 @@ const AIChatbotInner: React.FC<Props> = ({
 
   const [sessions, setSessions] = useState<Record<string, Session>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [input, setInput] = useState('');
+  
   const [isLoading, setIsLoading] = useState(false);
   const [tokenCount, setTokenCount] = useState<number>(0);
   const [showScrollButton, setShowScrollButton] = useState(false);
@@ -288,16 +362,13 @@ const AIChatbotInner: React.FC<Props> = ({
   const [cloudArchiveSessions, setCloudArchiveSessions] = useState<CloudChatSession[]>([]);
   const [isCloudArchiveLoading, setIsCloudArchiveLoading] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
-  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [showOrganizeInstruction, setShowOrganizeInstruction] = useState(false);
   const [organizeInstruction, setOrganizeInstruction] = useState('');
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const messageCountRef = useRef(0);
   
@@ -396,49 +467,60 @@ const AIChatbotInner: React.FC<Props> = ({
   };
 
   const checkAndCompressHistory = async (sessionId: string, history: Message[]) => {
-      const MAX_MESSAGES = 60;
-      const KEEP_MESSAGES = 50;
+      // UPDATED: More aggressive compression logic based on user feedback
+      const MAX_MESSAGES = 50;
+      const KEEP_MESSAGES = 30; // Keep last 30 messages (user + model turns)
+      
       if (history.length > MAX_MESSAGES) {
+          addLog('action', 'Chat', `Compressing chat history: ${history.length} > ${MAX_MESSAGES}`);
           const messagesToSummarize = history.slice(0, history.length - KEEP_MESSAGES);
           const messagesToKeep = history.slice(history.length - KEEP_MESSAGES);
+          
           try {
+             // Generate summary for older messages
              const summary = await summarizeMessages(messagesToSummarize, settings);
              const summaryMessage: Message = {
                  role: 'system',
                  text: `[SYSTEM: PREVIOUS CONVERSATION SUMMARY]\n${summary}`
              };
              const compressedHistory = [summaryMessage, ...messagesToKeep];
+             
+             // Update local state immediately
              setSessions(prev => ({ ...prev, [sessionId]: { ...prev[sessionId], messages: compressedHistory } }));
              return compressedHistory;
-          } catch(e: any) { return history; }
+          } catch(e: any) {
+             addLog('error', 'Chat', 'Compression failed', e);
+             return history; 
+          }
       }
       return history;
   };
 
-  const handleSend = async () => {
-    if ((!input.trim() && attachments.length === 0) || isLoading) return;
-    let targetSessionId = activeSessionId;
-    if (!targetSessionId) targetSessionId = createNewSession();
+  const handleSend = useCallback(async (text: string, files: ChatAttachment[]) => {
+    if (isLoading) return;
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) {
+        currentSessionId = createNewSession();
+    }
     
-    const currentInput = input;
-    const currentAttachments = [...attachments];
-    const userMsg: Message = { role: 'user', text: currentInput, attachments: currentAttachments };
-    setInput('');
-    setAttachments([]);
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    const userMsg: Message = { role: 'user', text: text, attachments: files };
+    let updatedHistory: Message[] = [];
     
-    const updatedHistory = [...(sessions[targetSessionId]?.messages || []), userMsg];
-
     setSessions(prev => {
-        const sess = { ...prev[targetSessionId!] };
+        const sess = prev[currentSessionId!] ? { ...prev[currentSessionId!] } : null;
+        if (!sess) return prev; 
+        
+        updatedHistory = [...sess.messages, userMsg];
         sess.messages = updatedHistory;
-        if (sess.messages.length <= 2 && currentInput) sess.title = currentInput.slice(0, 20) + (currentInput.length > 20 ? '...' : '');
-        return { ...prev, [targetSessionId!]: sess };
+        if (sess.messages.length <= 2 && text) sess.title = text.slice(0, 20) + (text.length > 20 ? '...' : '');
+        return { ...prev, [currentSessionId!]: sess };
     });
 
-    const processedHistory = await checkAndCompressHistory(targetSessionId!, updatedHistory);
-    await runGeneration(targetSessionId!, processedHistory);
-  };
+    // Run Compression Check BEFORE sending to AI
+    const processedHistory = await checkAndCompressHistory(currentSessionId!, updatedHistory);
+    
+    await runGeneration(currentSessionId!, processedHistory);
+  }, [activeSessionId, isLoading, settings]); 
 
   const runGeneration = async (sessionId: string, history: Message[]) => {
       setIsLoading(true);
@@ -524,7 +606,7 @@ const AIChatbotInner: React.FC<Props> = ({
       }
 
       setIsOrganizing(true);
-      addLog('info', 'Agent', 'Generating structured medical update (JSON)...');
+      addLog('info', 'Agent', 'Smart Agent: Analyzing context for medical record update...');
       
       try {
           const convoStr = history.map(m => `${m.role}: ${m.text}`).join('\n');
@@ -549,7 +631,7 @@ const AIChatbotInner: React.FC<Props> = ({
           
           // 3. Switch View
           if (onSwitchView) {
-              showToast("数据已提取！正在跳转并智能归档...");
+              showToast("AI 已整理完毕！正在跳转至病历界面进行智能归档...");
               setTimeout(() => {
                   onSwitchView(ViewMode.MEDICAL_RECORD);
               }, 800);
@@ -591,8 +673,7 @@ const AIChatbotInner: React.FC<Props> = ({
   const handleSaveTitle = () => { if (!editingSessionId || !editingTitle.trim()) { setEditingSessionId(null); return; } setSessions(prev => { const newSessions = { ...prev }; if (newSessions[editingSessionId]) { newSessions[editingSessionId].title = editingTitle.trim(); } return newSessions; }); setEditingSessionId(null); };
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   const handleScroll = () => { if (!messagesContainerRef.current) return; const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current; setShowScrollButton(scrollHeight - scrollTop - clientHeight > 200); };
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => { if (e.target.files && e.target.files.length > 0) { const files = e.target.files; const newAttachments: ChatAttachment[] = []; for (let i = 0; i < files.length; i++) { const file = files[i]; const reader = new FileReader(); const isImage = file.type.startsWith('image/'); const result = await new Promise<string>((resolve) => { if (isImage) reader.readAsDataURL(file); else reader.readAsText(file); reader.onload = () => resolve(reader.result as string); }); newAttachments.push({ id: `file-${Date.now()}-${Math.random()}`, type: isImage ? 'image' : 'file', name: file.name, content: result, mimeType: file.type }); } setAttachments(prev => [...prev, ...newAttachments]); if (fileInputRef.current) fileInputRef.current.value = ''; } };
-  const removeAttachment = (id: string) => setAttachments(prev => prev.filter(a => a.id !== id));
+  const removeAttachment = (id: string) => {}; // managed inside ChatInputArea now
   const deleteSession = async (id: string, e: React.MouseEvent) => { e.stopPropagation(); if(isVisitorMode) return; if (window.confirm("Delete session?")) { const newSessions = {...sessions}; delete newSessions[id]; setSessions(newSessions); if(activeSessionId === id) setActiveSessionId(null); } };
   
   const visibleSessions: Session[] = (Object.values(sessions) as Session[])
@@ -601,10 +682,6 @@ const AIChatbotInner: React.FC<Props> = ({
   
   const activeMessages = activeSessionId ? sessions[activeSessionId]?.messages || [] : [];
   
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setInput(e.target.value);
-  }, []);
-
   const SessionList = () => (
      <div className="flex flex-col h-full">
          <div className="p-4 border-b border-slate-200 bg-slate-50 space-y-3 shrink-0">
@@ -613,7 +690,7 @@ const AIChatbotInner: React.FC<Props> = ({
                 {!isVisitorMode && (
                     <>
                         <button onClick={handleManualSync} disabled={isSyncing || !activeSessionId} className={`flex-1 py-2 rounded-lg border text-xs font-bold transition-all flex items-center justify-center gap-1 ${isSyncing ? 'bg-emerald-50 text-emerald-600' : 'bg-white text-slate-500 hover:text-indigo-600'}`}>{isSyncing ? '备份中' : '同步'}</button>
-                        <button onClick={() => { setShowCloudArchive(true); setShowMobileSidebar(false); loadCloudArchive(); }} className="flex-1 py-2 rounded-lg border bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100 text-xs font-bold transition-all flex items-center justify-center gap-1"><span>📂</span> 历史存档</button>
+                        <button onClick={() => { setShowCloudArchive(true); setShowMobileSidebar(false); loadCloudArchive(); }} className="flex-1 py-2.5 rounded-lg border bg-indigo-50 text-indigo-600 border-indigo-200 hover:bg-indigo-100 text-xs font-bold transition-all flex items-center justify-center gap-1"><span>📂</span> 历史存档</button>
                     </>
                 )}
            </div>
@@ -651,20 +728,20 @@ const AIChatbotInner: React.FC<Props> = ({
               <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setShowOrganizeInstruction(false)}></div>
               <div className="relative bg-white w-full max-w-md rounded-2xl shadow-xl flex flex-col overflow-hidden animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
                   <div className="p-5 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white">
-                      <h3 className="font-bold text-lg">💡 整理指令 (可选)</h3>
-                      <p className="text-xs text-indigo-100 opacity-80 mt-1">告诉 AI 你希望重点提取什么信息</p>
+                      <h3 className="font-bold text-lg">AI 智能病历管家</h3>
+                      <p className="text-xs text-indigo-100 opacity-80 mt-1">深度感知上下文，智能分析并更新病历</p>
                   </div>
                   <div className="p-6">
                       <textarea
                           value={organizeInstruction}
                           onChange={(e) => setOrganizeInstruction(e.target.value)}
-                          placeholder="例如：&#10;- 重点提取现病史和用药情况&#10;- 忽略闲聊内容"
+                          placeholder="指令示例：&#10;- 重点记录今日新增的血压数据&#10;- 修正现病史中的日期错误&#10;- 忽略闲聊，只提取有效医疗信息"
                           className="w-full h-32 p-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none resize-none text-sm"
                       />
                       <div className="flex gap-3 mt-6">
                           <button onClick={() => setShowOrganizeInstruction(false)} className="flex-1 py-2.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 font-bold transition">取消</button>
                           <button onClick={handleOrganizeRecord} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-200 transition">
-                              {isOrganizing ? '整理中...' : '开始整理并自动录入'}
+                              {isOrganizing ? '整理中...' : '开始智能更新'}
                           </button>
                       </div>
                   </div>
@@ -689,10 +766,10 @@ const AIChatbotInner: React.FC<Props> = ({
                    onClick={initiateOrganization}
                    disabled={isOrganizing || !activeSessionId}
                    className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors flex items-center gap-1 font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-                   title="智能分析并增量更新到电子病历 (西医/中医/体征)"
+                   title="AI 助手：智能分析对话，按时间轴整理并更新病历"
                >
-                   {isOrganizing ? <span className="animate-spin">⏳</span> : <span>🧠</span>}
-                   {isOrganizing ? '分析中...' : '智能整理并入库'}
+                   {isOrganizing ? <span className="animate-spin">⏳</span> : <span>🤖</span>}
+                   {isOrganizing ? '智能分析中...' : 'AI 助手整理'}
                </button>
 
                {isAdminMode && (
@@ -702,7 +779,7 @@ const AIChatbotInner: React.FC<Props> = ({
         </div>
         <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth custom-scrollbar relative bg-[#fafafa]" ref={messagesContainerRef} onScroll={handleScroll}>
            {activeMessages.length === 0 ? (
-             <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-6"><div className="text-5xl">🤖</div><div className="text-center"><h3 className="text-xl font-bold text-slate-700">欢迎使用 AI 研讨</h3><p className="text-sm mt-2 max-w-md mx-auto">本模式已启用 Markdown 渲染引擎。\n支持代码高亮、表格、列表等富文本格式。\n如需上传病历，请使用右上角的【整理病历】功能。</p></div></div>
+             <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-6"><div className="text-5xl">🤖</div><div className="text-center"><h3 className="text-xl font-bold text-slate-700">欢迎使用 AI 研讨</h3><p className="text-sm mt-2 max-w-md mx-auto">本模式已启用 Markdown 渲染引擎。\n支持代码高亮、表格、列表等富文本格式。\n如需更新病历，请点击右上角的【AI 助手整理】按钮。</p></div></div>
            ) : (
              activeMessages.map((msg, i) => (
                <ChatMessageItem key={i} index={i} message={msg} isLoading={isLoading} isLast={i === activeMessages.length - 1} onDelete={handleDeleteMessage} onRegenerate={handleRegenerate} onEdit={handleEditMessage} onHerbClick={onHerbClick} herbRegex={herbRegex} />
@@ -712,38 +789,14 @@ const AIChatbotInner: React.FC<Props> = ({
            {showScrollButton && <button onClick={scrollToBottom} className="fixed bottom-40 right-10 z-30 w-10 h-10 bg-slate-900 text-white rounded-full shadow-xl flex items-center justify-center border-2 border-white">↓</button>}
         </div>
 
-        <div className="p-4 bg-white border-t border-slate-200 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.05)] z-30 shrink-0">
-           <div className="max-w-5xl mx-auto flex flex-col gap-2 relative">
-              <FileUploadPreview files={attachments} onRemove={removeAttachment} />
-              <div className="flex gap-3 items-end bg-slate-50 p-2 rounded-[1.5rem] border border-slate-200 focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-400 transition-all shadow-sm">
-                  <div className="relative pb-1 pl-1">
-                      <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileSelect} accept="image/*,.txt,.md,.csv,.json" />
-                      <button onClick={() => fileInputRef.current?.click()} className="w-10 h-10 rounded-full bg-slate-200 text-slate-600 hover:bg-indigo-100 hover:text-indigo-600 transition-colors flex items-center justify-center shadow-sm">📎</button>
-                  </div>
-                  <div className="flex-1 relative py-2.5">
-                    <textarea 
-                        ref={textareaRef} 
-                        value={input} 
-                        onChange={handleInputChange} 
-                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
-                        placeholder={isLoading ? "AI 正在思考..." : "输入消息 (Shift+Enter 换行)..."} 
-                        disabled={isLoading} 
-                        className="w-full bg-transparent border-none p-0 text-lg outline-none resize-none font-sans text-slate-900 placeholder-slate-400 min-h-[28px] max-h-[200px] leading-relaxed" 
-                        rows={1} 
-                    />
-                  </div>
-                  {isLoading ? (
-                    <button onClick={() => abortControllerRef.current?.abort()} className="w-11 h-11 rounded-full bg-red-100 text-red-600 hover:bg-red-200 flex items-center justify-center transition-all group shrink-0 mb-0.5">■</button>
-                  ) : (
-                    <button onClick={handleSend} disabled={!input.trim() && attachments.length === 0} className="w-11 h-11 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed shrink-0 mb-0.5">➤</button>
-                  )}
-               </div>
-               <div className="flex justify-between items-start">
-                   <TokenCapsule tokenCount={tokenCount} limit={200000} messageCount={activeMessages.length} />
-                   <div className="text-right pt-2"><span className="text-[10px] text-slate-300">LogicMaster AI v3.0 (Markdown Enabled)</span></div>
-               </div>
-           </div>
-        </div>
+        <ChatInputArea 
+            onSend={handleSend} 
+            isLoading={isLoading} 
+            onStop={() => abortControllerRef.current?.abort()} 
+            tokenCount={tokenCount} 
+            limit={200000} 
+            messageCount={activeMessages.length}
+        />
       </div>
     </div>
   );

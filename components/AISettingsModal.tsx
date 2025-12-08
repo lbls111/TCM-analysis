@@ -1,7 +1,8 @@
+
 import React, { useState } from 'react';
 import { AISettings } from '../types';
 import { fetchAvailableModels, testModelConnection, DEFAULT_ANALYZE_SYSTEM_INSTRUCTION } from '../services/openaiService';
-import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VISITOR_DEFAULT_CHAT_MODEL } from '../constants';
+import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VISITOR_DEFAULT_CHAT_MODEL, DEFAULT_ORGANIZE_MODEL } from '../constants';
 
 interface Props {
   isOpen: boolean;
@@ -40,6 +41,7 @@ export const AISettingsModal: React.FC<Props> = ({ isOpen, onClose, settings, on
         topP: 0.95,
         maxTokens: 8192,
         thinkingBudget: 0,
+        organizeModel: DEFAULT_ORGANIZE_MODEL,
         // Keep credentials
         embeddingModel: DEFAULT_EMBEDDING_MODEL,
         rerankModel: DEFAULT_RERANK_MODEL
@@ -340,6 +342,24 @@ create policy "Public access chats" on chat_sessions for all using (true) with c
                                     )}
                                 </div>
                                 <p className="text-xs text-slate-400">用于生成深度分析报告与对话。</p>
+                            </div>
+
+                            {/* Organized Model Input */}
+                            <div className="space-y-1 pt-2 border-t border-slate-100">
+                                <label className="text-sm font-bold text-slate-700 block flex justify-between">
+                                    <span>病历整理模型 (Organize Model)</span>
+                                    <span className="text-xs font-normal text-slate-400 bg-slate-100 px-2 rounded">默认为 {DEFAULT_ORGANIZE_MODEL}</span>
+                                </label>
+                                <div className="relative">
+                                    <input 
+                                    type="text" 
+                                    value={localSettings.organizeModel || DEFAULT_ORGANIZE_MODEL}
+                                    onChange={e => setLocalSettings({...localSettings, organizeModel: e.target.value})}
+                                    placeholder={DEFAULT_ORGANIZE_MODEL}
+                                    className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-sm font-mono text-indigo-700"
+                                    />
+                                </div>
+                                <p className="text-xs text-slate-400">专用于从对话提取结构化病历数据的轻量模型。与主力模型使用相同的 API Key。</p>
                             </div>
                         </div>
                     )}
