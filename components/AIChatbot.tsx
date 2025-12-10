@@ -468,8 +468,8 @@ const AIChatbotInner: React.FC<Props> = ({
 
   const checkAndCompressHistory = async (sessionId: string, history: Message[]) => {
       // UPDATED: More aggressive compression logic based on user feedback
-      const MAX_MESSAGES = 50;
-      const KEEP_MESSAGES = 30; // Keep last 30 messages (user + model turns)
+      const MAX_MESSAGES = 60;
+      const KEEP_MESSAGES = 50; // Keep last 30 messages (user + model turns)
       
       if (history.length > MAX_MESSAGES) {
           addLog('action', 'Chat', `Compressing chat history: ${history.length} > ${MAX_MESSAGES}`);
