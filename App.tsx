@@ -165,6 +165,9 @@ function LogicMasterApp() {
   const [editingHerb, setEditingHerb] = useState<BenCaoHerb | null>(null);
   const [isSavingHerb, setIsSavingHerb] = useState(false);
   
+  // State to trigger re-renders when herbs are loaded
+  const [herbDbLoaded, setHerbDbLoaded] = useState(false);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   
   // Ref for handling scroll reset
@@ -350,9 +353,12 @@ function LogicMasterApp() {
   }, [aiSettings, userMode]);
 
   // Ensure Herbs are reloaded when settings change (especially mode switch)
+  // And force re-render via herbDbLoaded state
   useEffect(() => {
       // Pass the *active* settings to ensure visitor mode gets public data
-      loadCustomHerbs(activeAiSettings);
+      loadCustomHerbs(activeAiSettings).then(() => {
+          setHerbDbLoaded(prev => !prev); // Toggle to trigger re-render
+      });
   }, [activeAiSettings.supabaseUrl, activeAiSettings.supabaseKey]);
 
   useEffect(() => {
@@ -371,7 +377,7 @@ function LogicMasterApp() {
       if (names.length === 0) return null;
       const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
       return new RegExp(`(${escaped.join('|')})`, 'g');
-  }, [FULL_HERB_LIST.length]);
+  }, [FULL_HERB_LIST.length, herbDbLoaded]); // Added herbDbLoaded to dependency
 
   // Enhanced HTML Cleaning & Processing
   const processReportContent = (text: string) => {
@@ -1225,6 +1231,7 @@ function LogicMasterApp() {
       <MobileBottomNav currentView={view} setView={setView} />
 
       <main className={`flex-1 overflow-hidden relative ${view === ViewMode.INPUT ? 'flex items-center justify-center p-6' : 'w-full'}`}>
+        {/* ... (Existing view components remain same) ... */}
         
         {view === ViewMode.INPUT && (
           <div className="w-full max-w-3xl animate-in zoom-in-95 duration-500 overflow-y-auto max-h-full p-4 custom-scrollbar">
@@ -1282,7 +1289,7 @@ function LogicMasterApp() {
           </div>
         )}
 
-        {/* ... (Middle Content remains the same) ... */}
+        {/* ... (Keep existing middle content) ... */}
         {view === ViewMode.WORKSHOP && analysis && (
           <div ref={mainScrollRef} className="h-full w-full overflow-y-auto p-4 lg:p-8">
             <div className="max-w-[1600px] mx-auto space-y-6 md:space-y-8 animate-in slide-in-from-bottom-4 fade-in pb-24 lg:pb-8">
@@ -1335,9 +1342,6 @@ function LogicMasterApp() {
           </div>
         )}
 
-        {/* --- PERSISTENT BACKGROUND VIEWS --- */}
-        {/* We use hidden class instead of conditional rendering to keep component state alive (e.g. ongoing API calls) */}
-        
         <div ref={mainScrollRef} className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
              <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">
                 <MedicalRecordManager 
@@ -1359,6 +1363,7 @@ function LogicMasterApp() {
         </div>
 
         <div className={`h-full w-full flex flex-col animate-in zoom-in-95 ${view === ViewMode.REPORT ? 'flex' : 'hidden'}`}>
+              {/* Report content (Keep existing) */}
               <div className="flex-1 flex flex-col h-full min-w-0 max-w-[1800px] mx-auto w-full p-4 lg:p-6 gap-6">
                   {/* Persistent Report Toolbar */}
                   <div className="flex flex-col md:flex-row gap-4 items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex-shrink-0 z-40">
@@ -1495,11 +1500,11 @@ function LogicMasterApp() {
                         settings={activeAiSettings}
                         medicalRecord={medicalRecord}
                         onUpdateMedicalRecord={setMedicalRecord}
-                        onUpdateHerb={handleUpdateHerbFromChat} // Pass the new handler
+                        onUpdateHerb={handleUpdateHerbFromChat}
                         isVisitorMode={isVisitorMode}
                         isAdminMode={isAdminMode}
                         activePatient={activePatient}
-                        onSwitchView={setView} // Pass navigation handler
+                        onSwitchView={setView}
                      />
                  )}
              </div>

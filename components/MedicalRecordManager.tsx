@@ -526,8 +526,11 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
 
   const handleSyncToCloud = async () => {
       if(onSaveToCloud) {
-          addLog("☁️ 请求同步云端...");
-          try { await onSaveToCloud(); } 
+          addLog("☁️ 请求手动备份...");
+          try { 
+              await onSaveToCloud(); 
+              addLog("✅ 备份成功！");
+          } 
           catch(e: any) { 
               if (String(e).includes("SCHEMA_ERROR")) setShowSchemaError(true);
               else addLog(`❌ 同步失败: ${e.message}`); 
@@ -576,8 +579,18 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                   <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                       <span className="text-2xl">📚</span> RAG 知识库
                   </h3>
-                  {activePatient && <span className="text-xs font-sans font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full hidden md:inline-block font-bold">{activePatient.name}</span>}
-                  {isAutoSaving && <span className="text-xs text-indigo-500 animate-pulse font-mono">☁️ Saving...</span>}
+                  {activePatient && (
+                      <div className="flex items-center gap-2">
+                          <span className="text-xs font-sans font-normal bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full hidden md:inline-block font-bold">{activePatient.name}</span>
+                          {isAutoSaving ? (
+                              <span className="text-xs text-emerald-600 font-bold animate-pulse flex items-center gap-1">
+                                  <span className="w-2 h-2 bg-emerald-500 rounded-full"></span> 自动同步中...
+                              </span>
+                          ) : (
+                              <span className="text-[10px] text-slate-400">已自动同步至云端</span>
+                          )}
+                      </div>
+                  )}
               </div>
               <div className="flex gap-2">
                   {!activePatient && (
@@ -585,9 +598,10 @@ export const MedicalRecordManager: React.FC<Props> = ({ record, onUpdate, onSave
                           <span>📂</span> 历史
                       </button>
                   )}
-                  {isAdminMode && !activePatient && (
+                  {/* Manual Backup Button - Always show for reassurance, even if auto-save exists */}
+                  {settings.supabaseKey && (
                       <button onClick={handleSyncToCloud} className="text-xs text-emerald-600 font-bold px-3 py-1.5 rounded border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 flex items-center gap-1">
-                          <span>☁️</span> 备份
+                          <span>☁️</span> 手动备份
                       </button>
                   )}
                   <button onClick={() => { if(window.confirm('确定清空所有记录吗？')) onUpdate(createEmptyMedicalRecord()); }} className="text-xs text-red-400 hover:text-red-600 font-bold px-3 py-1.5 rounded hover:bg-red-50">清空</button>

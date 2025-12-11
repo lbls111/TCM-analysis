@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { BenCaoHerb, AISettings } from '../types';
 import { FULL_HERB_LIST, HERB_ALIASES, loadCustomHerbs } from '../data/herbDatabase'; 
@@ -213,8 +214,8 @@ create policy "Public delete access" on herbs for delete using (true);`;
   return (
     <div className="w-full h-full min-h-[80vh] flex flex-col gap-6 animate-in fade-in relative font-sans">
       
-      {/* Header */}
-      <div className="bg-[#fcfaf5] p-6 rounded-[2rem] border border-stone-200 shadow-sm relative overflow-hidden">
+      {/* Header - Fixed to prevent overlap */}
+      <div className="bg-[#fcfaf5] p-6 rounded-[2rem] border border-stone-200 shadow-sm relative overflow-hidden shrink-0 z-20">
         <div className="absolute top-0 right-0 w-96 h-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-amber-100/40 via-transparent to-transparent pointer-events-none"></div>
 
         <div className="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center mb-6 relative z-10">
@@ -310,7 +311,7 @@ create policy "Public delete access" on herbs for delete using (true);`;
       </div>
 
       {/* Grid Content */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pb-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pb-12 overflow-y-auto">
         {filteredHerbs.length > 0 ? filteredHerbs.map(herb => {
           const cleanDisplayName = herb.name.replace(/[^\u4e00-\u9fa5（）\(\)]/g, ''); 
           const isProcessed = herb.processing && herb.processing !== '生用';

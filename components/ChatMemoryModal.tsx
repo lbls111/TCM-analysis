@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 
 interface Props {
@@ -83,7 +84,7 @@ export const ChatMemoryModal: React.FC<Props> = ({ isOpen, onClose, tokenCount, 
         <div className="p-4 border-t border-slate-100 flex justify-end gap-3 bg-slate-50">
             <button onClick={onClose} className="px-5 py-2 rounded-lg text-slate-500 font-bold hover:bg-slate-100 transition">取消</button>
             <button 
-                onClick={() => { onCompress(keepCount); onClose(); }}
+                onClick={() => { onCompress(keepCount); }}
                 disabled={isCompressing}
                 className="px-6 py-2 rounded-lg bg-indigo-600 text-white font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition transform active:scale-95 disabled:bg-slate-300 disabled:shadow-none flex items-center gap-2"
             >

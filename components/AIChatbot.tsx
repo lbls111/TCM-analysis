@@ -4,18 +4,21 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { generateChatStream, summarizeMessages, createEmptyMedicalRecord, CHAT_SYSTEM_INSTRUCTION_BASE, generateStructuredMedicalUpdate } from '../services/openaiService';
-import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession, MedicalRecord, BenCaoHerb, Patient, ViewMode } from '../types';
+import { AnalysisResult, AISettings, ChatAttachment, CloudChatSession, MedicalRecord, BenCaoHerb, Patient, ViewMode, MedicalKnowledgeChunk } from '../types';
 import { FULL_HERB_LIST } from '../data/herbDatabase';
 import { fetchCloudChatSessions, saveCloudChatSession, deleteCloudChatSession } from '../services/supabaseService';
 import { TokenCapsule } from './TokenCapsule';
 import { useLog } from '../contexts/LogContext';
 import { PromptEditorModal } from './PromptEditorModal';
+import { ChatMemoryModal } from './ChatMemoryModal';
 
 interface Message {
   role: 'user' | 'model' | 'system';
   text: string;
   isError?: boolean;
   attachments?: ChatAttachment[];
+  citations?: MedicalKnowledgeChunk[]; 
+  searchQuery?: string; 
 }
 
 interface Session {
@@ -56,6 +59,7 @@ const NotificationBubble = ({ message, visible }: { message: string, visible: bo
     );
 };
 
+// ... (CloudArchiveModal, FileUploadPreview, ChatInputArea remain largely same) ...
 const CloudArchiveModal: React.FC<any> = ({ isOpen, onClose, sessions, onLoad, onDelete, isLoading, isVisitorMode }) => {
     if (!isOpen) return null;
     const chatSessions = sessions.filter((s: any) => !s.id.startsWith('medical_record_master_'));
@@ -121,14 +125,14 @@ const FileUploadPreview: React.FC<any> = ({ files, onRemove }) => {
     return (<div className="flex gap-2 p-3 overflow-x-auto border-t border-slate-200 bg-slate-100 rounded-t-xl mx-0">{files.map((f:any) => (<div key={f.id} className="relative group shrink-0 w-24 h-24 rounded-lg border border-slate-300 overflow-hidden bg-white shadow-sm">{f.type === 'image' ? <img src={f.content} className="w-full h-full object-cover" /> : <div className="w-full h-full flex flex-col items-center justify-center text-xs text-slate-600 p-2 bg-slate-50"><span className="text-2xl mb-1">📄</span><span className="truncate w-full text-center font-medium">{f.name}</span></div>}<button onClick={() => onRemove(f.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">✕</button></div>))}</div>);
 };
 
-// Isolated Input Component to prevent re-rendering the whole chat list on typing
-const ChatInputArea = memo(({ onSend, isLoading, onStop, tokenCount, limit, messageCount }: { 
+const ChatInputArea = memo(({ onSend, isLoading, onStop, tokenCount, limit, messageCount, onOpenMemory }: { 
     onSend: (text: string, files: ChatAttachment[]) => void, 
     isLoading: boolean, 
     onStop: () => void,
     tokenCount: number,
     limit: number,
-    messageCount: number
+    messageCount: number,
+    onOpenMemory: () => void
 }) => {
     const [input, setInput] = useState('');
     const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -177,7 +181,7 @@ const ChatInputArea = memo(({ onSend, isLoading, onStop, tokenCount, limit, mess
                         value={input} 
                         onChange={e => setInput(e.target.value)} 
                         onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
-                        placeholder={isLoading ? "AI 正在思考..." : "输入消息 (Shift+Enter 换行)..."} 
+                        placeholder={isLoading ? "AI 正在深度思考..." : "输入消息 (Shift+Enter 换行)..."} 
                         disabled={isLoading} 
                         className="w-full bg-transparent border-none p-0 text-lg outline-none resize-none font-sans text-slate-900 placeholder-slate-400 min-h-[28px] max-h-[200px] leading-relaxed" 
                         rows={1} 
@@ -189,14 +193,55 @@ const ChatInputArea = memo(({ onSend, isLoading, onStop, tokenCount, limit, mess
                     <button onClick={handleSend} disabled={!input.trim() && attachments.length === 0} className="w-11 h-11 rounded-full bg-indigo-600 text-white flex items-center justify-center shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed shrink-0 mb-0.5">➤</button>
                   )}
                </div>
-               <div className="flex justify-between items-start">
-                   <TokenCapsule tokenCount={tokenCount} limit={200000} messageCount={messageCount} />
-                   <div className="text-right pt-2"><span className="text-[10px] text-slate-300">LogicMaster AI v3.0 (Markdown Enabled)</span></div>
+               <div className="flex justify-between items-center pt-2">
+                   <div className="flex items-center gap-2">
+                        <TokenCapsule tokenCount={tokenCount} limit={200000} messageCount={messageCount} />
+                        <button 
+                            onClick={onOpenMemory}
+                            className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full hover:bg-indigo-100 border border-indigo-200 transition-colors flex items-center gap-1"
+                        >
+                            <span>🧠</span> 整理记忆
+                        </button>
+                   </div>
+                   <div className="text-right"><span className="text-[10px] text-slate-300">LogicMaster AI v3.1 (RAG Enhanced)</span></div>
                </div>
            </div>
         </div>
     );
 });
+
+// --- NEW: Citation Preview Modal ---
+const EvidenceModal: React.FC<{ citations: MedicalKnowledgeChunk[], selectedId: string | null, onClose: () => void }> = ({ citations, selectedId, onClose }) => {
+    if (!selectedId) return null;
+    const index = parseInt(selectedId) - 1;
+    const chunk = citations[index];
+
+    if (!chunk) return null;
+
+    return (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose}></div>
+            <div className="relative bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 animate-in zoom-in-95 border border-slate-200">
+                <div className="flex justify-between items-start mb-4">
+                    <div className="flex items-center gap-2">
+                        <span className="bg-indigo-100 text-indigo-700 font-bold px-2 py-1 rounded text-sm">证据 [{selectedId}]</span>
+                        <span className="text-xs text-slate-400 font-mono">
+                            ID: {chunk.id.slice(0, 8)}...
+                        </span>
+                    </div>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+                </div>
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-sm leading-relaxed text-slate-700 font-serif-sc overflow-y-auto max-h-[60vh]">
+                    {chunk.content}
+                </div>
+                <div className="mt-4 flex justify-between items-center text-xs text-slate-400">
+                    <span>来源: {chunk.sourceType}</span>
+                    <span>{new Date(chunk.createdAt).toLocaleString()}</span>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 interface ChatMessageItemProps {
     message: Message;
@@ -216,17 +261,80 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
     const [editValue, setEditValue] = useState(message.text);
     const [isHovering, setIsHovering] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
+    const [activeCitationId, setActiveCitationId] = useState<string | null>(null);
+    const [showSources, setShowSources] = useState(false);
 
-    // Custom renderer for herbs to make them clickable
+    // Prepare content by transforming [1] to links
+    const contentWithLinks = useMemo(() => {
+        let text = message.text || '';
+        
+        // 1. Process Citations: [1] -> [1](citation:1)
+        text = text.replace(/\[(\d+)\]/g, '[$1](citation:$1)');
+
+        // 2. Process Herbs: Name -> [Name](#herb:Name)
+        // CRITICAL: Using proper Hash format to ensure it looks like a valid link to Markdown parsers,
+        // but can be safely intercepted.
+        if (herbRegex) {
+            text = text.replace(herbRegex, (match) => `[${match}](#herb:${match})`);
+        }
+
+        return text;
+    }, [message.text, herbRegex]);
+
     const components = useMemo(() => ({
         code: ({node, inline, className, children, ...props}: any) => {
              return <code className={`${className} bg-slate-100 text-rose-600 px-1 rounded font-mono text-sm`} {...props}>{children}</code>;
+        },
+        a: ({node, href, children, ...props}: any) => {
+            if (href && href.startsWith('citation:')) {
+                const id = href.split(':')[1];
+                return (
+                    <button 
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setActiveCitationId(id); }}
+                        className="inline-flex items-center justify-center w-5 h-5 mx-0.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition-all align-text-top shadow-sm translate-y-0.5"
+                        title="点击查看证据详情"
+                    >
+                        {children}
+                    </button>
+                );
+            }
+            
+            // Updated Herb Link Handler:
+            // CRITICAL FIX: Render as SPAN instead of A to prevent 403 errors and browser navigation
+            // Uses .includes('herb:') to be robust against full URL expansion
+            if (href && (href.includes('herb:'))) {
+                let herbName = "";
+                try {
+                    // Handle #herb:Name or full url ending in #herb:Name
+                    const parts = href.split('herb:');
+                    if (parts.length > 1) {
+                        herbName = decodeURIComponent(parts[1]);
+                    } else {
+                        herbName = decodeURIComponent(href);
+                    }
+                } catch(e) { herbName = href; }
+                
+                return (
+                    <span 
+                        onClick={(e) => { 
+                            e.preventDefault(); 
+                            e.stopPropagation(); 
+                            onHerbClick?.(herbName); 
+                        }}
+                        className="text-indigo-600 font-bold border-b border-indigo-200 hover:bg-indigo-50 hover:border-indigo-500 cursor-pointer transition-colors px-0.5 rounded-sm select-none"
+                        title="点击查看药典详情"
+                        role="button"
+                        tabIndex={0}
+                    >
+                        {children}
+                    </span>
+                );
+            }
+            return <a href={href} className="text-indigo-600 hover:underline" {...props} target="_blank" rel="noopener noreferrer">{children}</a>;
         }
-    }), []);
+    }), [onHerbClick]); 
 
-    const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-      // Basic check for future expansion if we add custom herb links via rehype
-    };
+    const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {};
 
     const handleCopy = () => {
         navigator.clipboard.writeText(message.text);
@@ -247,6 +355,12 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
             onMouseEnter={() => setIsHovering(true)}
             onMouseLeave={() => setIsHovering(false)}
         >
+            <EvidenceModal 
+                citations={message.citations || []} 
+                selectedId={activeCitationId} 
+                onClose={() => setActiveCitationId(null)} 
+            />
+
             <div className={`w-10 h-10 lg:w-12 lg:h-12 rounded-2xl flex items-center justify-center text-xl font-bold shrink-0 shadow-md border ${isUser ? 'bg-gradient-to-br from-indigo-500 to-indigo-700 text-white border-indigo-600' : 'bg-white text-indigo-600 border-slate-200'}`}>
                 {isUser ? '🧑‍⚕️' : '🤖'}
             </div>
@@ -261,6 +375,31 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                         ? 'bg-indigo-600 text-white border-indigo-600 rounded-tr-none shadow-indigo-200' 
                         : 'bg-white text-slate-800 border-slate-200 rounded-tl-none shadow-sm'
                 }`}>
+                    {/* Citations / Sources Panel */}
+                    {!isUser && message.citations && message.citations.length > 0 && (
+                        <div className="mb-4 border border-indigo-100 rounded-xl bg-indigo-50/30 overflow-hidden">
+                            <button 
+                                onClick={() => setShowSources(!showSources)}
+                                className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 text-indigo-700 text-xs font-bold hover:bg-indigo-100 transition-colors"
+                            >
+                                <span className="flex items-center gap-2">
+                                    <span>📚</span> 已引用 {message.citations.length} 条病历证据
+                                </span>
+                                <span>{showSources ? '▲' : '▼'}</span>
+                            </button>
+                            {showSources && (
+                                <div className="p-3 space-y-2 max-h-48 overflow-y-auto custom-scrollbar bg-white">
+                                    {message.citations.map((c, idx) => (
+                                        <div key={idx} className="text-xs p-2 rounded bg-slate-50 border border-slate-100 hover:border-indigo-200 cursor-pointer" onClick={() => setActiveCitationId((idx + 1).toString())}>
+                                            <div className="font-bold text-indigo-600 mb-1">证据 [{idx + 1}]</div>
+                                            <div className="text-slate-600 line-clamp-2">{c.content}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {isEditing ? (
                         <div className="min-w-[300px]">
                             <textarea 
@@ -285,12 +424,11 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                                 rehypePlugins={[rehypeRaw]}
                                 components={components}
                             >
-                                {message.text}
+                                {contentWithLinks}
                             </ReactMarkdown>
                         </div>
                     )}
                     
-                    {/* Attachment preview for User Messages */}
                     {isUser && message.attachments && message.attachments.length > 0 && (
                         <div className="flex gap-2 mt-3 flex-wrap">
                             {message.attachments.map((att, idx) => (
@@ -339,33 +477,31 @@ const AIChatbotInner: React.FC<Props> = ({
   activePatient,
   onSwitchView
 }) => {
+  // ... (Hooks remain same) ...
   const { addLog } = useLog(); 
   const LS_CHAT_SESSIONS_KEY = activePatient ? `logicmaster_chat_sessions_${activePatient.id}` : "logicmaster_chat_sessions";
 
   const [sessions, setSessions] = useState<Record<string, Session>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  
   const [isLoading, setIsLoading] = useState(false);
   const [tokenCount, setTokenCount] = useState<number>(0);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
   const [notificationMsg, setNotificationMsg] = useState("");
-  
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
-  
   const [showPromptEditor, setShowPromptEditor] = useState(false);
   const [customSystemPrompt, setCustomSystemPrompt] = useState(CHAT_SYSTEM_INSTRUCTION_BASE);
-
   const [isSyncing, setIsSyncing] = useState(false);
   const [showCloudArchive, setShowCloudArchive] = useState(false);
   const [cloudArchiveSessions, setCloudArchiveSessions] = useState<CloudChatSession[]>([]);
   const [isCloudArchiveLoading, setIsCloudArchiveLoading] = useState(false);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
-  
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [showOrganizeInstruction, setShowOrganizeInstruction] = useState(false);
   const [organizeInstruction, setOrganizeInstruction] = useState('');
+  const [showMemoryModal, setShowMemoryModal] = useState(false);
+  const [isCompressing, setIsCompressing] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -375,6 +511,7 @@ const AIChatbotInner: React.FC<Props> = ({
   const medicalRecordRef = useRef(medicalRecord);
   useEffect(() => { medicalRecordRef.current = medicalRecord; }, [medicalRecord]);
   
+  // ... (Other useEffects remain same) ...
   const herbRegex = useMemo(() => {
       const names = FULL_HERB_LIST.map(h => h.name).sort((a, b) => b.length - a.length);
       if (names.length === 0) return null;
@@ -466,34 +603,39 @@ const AIChatbotInner: React.FC<Props> = ({
       }
   };
 
-  const checkAndCompressHistory = async (sessionId: string, history: Message[]) => {
-      // UPDATED: More aggressive compression logic based on user feedback
-      const MAX_MESSAGES = 60;
-      const KEEP_MESSAGES = 50; // Keep last 30 messages (user + model turns)
-      
-      if (history.length > MAX_MESSAGES) {
-          addLog('action', 'Chat', `Compressing chat history: ${history.length} > ${MAX_MESSAGES}`);
-          const messagesToSummarize = history.slice(0, history.length - KEEP_MESSAGES);
-          const messagesToKeep = history.slice(history.length - KEEP_MESSAGES);
-          
-          try {
-             // Generate summary for older messages
-             const summary = await summarizeMessages(messagesToSummarize, settings);
-             const summaryMessage: Message = {
-                 role: 'system',
-                 text: `[SYSTEM: PREVIOUS CONVERSATION SUMMARY]\n${summary}`
-             };
-             const compressedHistory = [summaryMessage, ...messagesToKeep];
-             
-             // Update local state immediately
-             setSessions(prev => ({ ...prev, [sessionId]: { ...prev[sessionId], messages: compressedHistory } }));
-             return compressedHistory;
-          } catch(e: any) {
-             addLog('error', 'Chat', 'Compression failed', e);
-             return history; 
-          }
+  const handleManualCompress = async (keepCount: number) => {
+      if (!activeSessionId) return;
+      const history = sessions[activeSessionId].messages;
+      if (history.length <= keepCount) {
+          showToast(`当前消息数 (${history.length}) 未超过保留数 (${keepCount})，无需压缩。`);
+          return;
       }
-      return history;
+
+      setIsCompressing(true);
+      addLog('action', 'Chat', `Manual compression: keeping last ${keepCount} messages`);
+      
+      const messagesToSummarize = history.slice(0, history.length - keepCount);
+      const messagesToKeep = history.slice(history.length - keepCount);
+      
+      try {
+          const summary = await summarizeMessages(messagesToSummarize, settings);
+          const summaryMessage: Message = {
+              role: 'system',
+              text: `[SYSTEM: PREVIOUS CONVERSATION SUMMARY (COMPRESSED)]\n${summary}`
+          };
+          const compressedHistory = [summaryMessage, ...messagesToKeep];
+          
+          setSessions(prev => ({ 
+              ...prev, 
+              [activeSessionId]: { ...prev[activeSessionId], messages: compressedHistory } 
+          }));
+          showToast(`✅ 压缩完成！已合并旧消息为摘要。`);
+      } catch(e: any) {
+          addLog('error', 'Chat', 'Compression failed', e);
+          showToast(`❌ 压缩失败: ${e.message}`);
+      } finally {
+          setIsCompressing(false);
+      }
   };
 
   const handleSend = useCallback(async (text: string, files: ChatAttachment[]) => {
@@ -516,10 +658,8 @@ const AIChatbotInner: React.FC<Props> = ({
         return { ...prev, [currentSessionId!]: sess };
     });
 
-    // Run Compression Check BEFORE sending to AI
-    const processedHistory = await checkAndCompressHistory(currentSessionId!, updatedHistory);
-    
-    await runGeneration(currentSessionId!, processedHistory);
+    // removed automatic compression call here, relying on manual trigger
+    await runGeneration(currentSessionId!, updatedHistory);
   }, [activeSessionId, isLoading, settings]); 
 
   const runGeneration = async (sessionId: string, history: Message[]) => {
@@ -548,6 +688,23 @@ const AIChatbotInner: React.FC<Props> = ({
           let fullText = '';
           
           for await (const chunk of stream) {
+              // Handle Citations Payload
+              if (chunk.citations) {
+                  setSessions(prev => {
+                      const sess = { ...prev[sessionId] };
+                      const lastIdx = sess.messages.length - 1;
+                      if (lastIdx >= 0 && sess.messages[lastIdx].role === 'model') {
+                          // Merge citations instead of overwriting if already exists (though stream usually sends once)
+                          sess.messages[lastIdx] = { 
+                              ...sess.messages[lastIdx], 
+                              citations: chunk.citations,
+                              searchQuery: chunk.query
+                          };
+                      }
+                      return { ...prev, [sessionId]: sess };
+                  });
+              }
+
               if (chunk.text) {
                   fullText += chunk.text;
                   setSessions(prev => {
@@ -586,6 +743,7 @@ const AIChatbotInner: React.FC<Props> = ({
       }
   };
   
+  // ... (initiateOrganization, handleOrganizeRecord, createNewSession, handleRegenerate, handleEditMessage, handleDeleteMessage, handleManualSync, loadCloudArchive, handleDeleteCloudSession, handleLoadCloudSession, handleStartEditTitle, handleSaveTitle, scrollToBottom, handleScroll, deleteSession, visibleSessions, activeMessages, SessionList remain largely same) ...
   const initiateOrganization = () => {
       if (!activeSessionId) {
           alert("请先开始一段对话，AI 才能从中整理病历。");
@@ -610,7 +768,6 @@ const AIChatbotInner: React.FC<Props> = ({
       
       try {
           const convoStr = history.map(m => `${m.role}: ${m.text}`).join('\n');
-          // NEW: USE STRUCTURED UPDATE AGENT (Pass current record as context)
           const jsonString = await generateStructuredMedicalUpdate(
               convoStr, 
               medicalRecordRef.current, 
@@ -624,12 +781,9 @@ const AIChatbotInner: React.FC<Props> = ({
 
           addLog('success', 'Agent', 'Structured JSON generated. Auto-navigating...');
           
-          // 1. Save JSON to draft
           localStorage.setItem("logicmaster_medical_input_draft", jsonString);
-          // 2. Set auto-run flag
           localStorage.setItem("logicmaster_auto_run_import", "true");
           
-          // 3. Switch View
           if (onSwitchView) {
               showToast("AI 已整理完毕！正在跳转至病历界面进行智能归档...");
               setTimeout(() => {
@@ -673,7 +827,6 @@ const AIChatbotInner: React.FC<Props> = ({
   const handleSaveTitle = () => { if (!editingSessionId || !editingTitle.trim()) { setEditingSessionId(null); return; } setSessions(prev => { const newSessions = { ...prev }; if (newSessions[editingSessionId]) { newSessions[editingSessionId].title = editingTitle.trim(); } return newSessions; }); setEditingSessionId(null); };
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   const handleScroll = () => { if (!messagesContainerRef.current) return; const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current; setShowScrollButton(scrollHeight - scrollTop - clientHeight > 200); };
-  const removeAttachment = (id: string) => {}; // managed inside ChatInputArea now
   const deleteSession = async (id: string, e: React.MouseEvent) => { e.stopPropagation(); if(isVisitorMode) return; if (window.confirm("Delete session?")) { const newSessions = {...sessions}; delete newSessions[id]; setSessions(newSessions); if(activeSessionId === id) setActiveSessionId(null); } };
   
   const visibleSessions: Session[] = (Object.values(sessions) as Session[])
@@ -720,6 +873,15 @@ const AIChatbotInner: React.FC<Props> = ({
     <div className="flex h-full w-full bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200 relative">
       <NotificationBubble message={notificationMsg} visible={showNotification} />
       <PromptEditorModal isOpen={showPromptEditor} onClose={() => setShowPromptEditor(false)} title="AI 问答系统提示词" defaultPrompt={customSystemPrompt} onSave={setCustomSystemPrompt} />
+      <ChatMemoryModal 
+          isOpen={showMemoryModal} 
+          onClose={() => setShowMemoryModal(false)} 
+          tokenCount={tokenCount} 
+          messageCount={activeMessages.length}
+          onCompress={handleManualCompress}
+          isCompressing={isCompressing}
+      />
+      
       <CloudArchiveModal isOpen={showCloudArchive} onClose={() => setShowCloudArchive(false)} sessions={cloudArchiveSessions} onLoad={handleLoadCloudSession} onDelete={handleDeleteCloudSession} isLoading={isCloudArchiveLoading} isVisitorMode={isVisitorMode} />
       {showMobileSidebar && <div className="fixed inset-0 z-50 flex md:hidden"><div className="absolute inset-0 bg-black/50" onClick={() => setShowMobileSidebar(false)}></div><div className="relative w-4/5 max-w-xs bg-slate-50 h-full shadow-2xl"><SessionList /></div></div>}
       
@@ -757,7 +919,7 @@ const AIChatbotInner: React.FC<Props> = ({
              <button className="md:hidden p-2 text-slate-500" onClick={() => setShowMobileSidebar(true)}>☰</button>
              <div>
                  <h3 className="font-bold text-slate-800 text-lg">智能研讨 (AI Chat)</h3>
-                 <p className="text-[10px] text-slate-400 font-medium">支持 Markdown 渲染 • 纯文本流式生成</p>
+                 <p className="text-[10px] text-slate-400 font-medium">支持 Markdown 渲染 • RAG 增强</p>
              </div>
            </div>
            
@@ -796,6 +958,7 @@ const AIChatbotInner: React.FC<Props> = ({
             tokenCount={tokenCount} 
             limit={200000} 
             messageCount={activeMessages.length}
+            onOpenMemory={() => setShowMemoryModal(true)}
         />
       </div>
     </div>
