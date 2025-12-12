@@ -392,7 +392,7 @@ const ChatMessageItem = memo((props: ChatMessageItemProps) => {
                                     {message.citations.map((c, idx) => (
                                         <div key={idx} className="text-xs p-2 rounded bg-slate-50 border border-slate-100 hover:border-indigo-200 cursor-pointer" onClick={() => setActiveCitationId((idx + 1).toString())}>
                                             <div className="font-bold text-indigo-600 mb-1">证据 [{idx + 1}]</div>
-                                            <div className="text-slate-600 line-clamp-2">{c.content}</div>
+                                            <div className="text-slate-600 line-clamp-2">{c?.content || '无内容'}</div>
                                         </div>
                                     ))}
                                 </div>
@@ -520,9 +520,11 @@ const AIChatbotInner: React.FC<Props> = ({
       return new RegExp(`(${escaped.join('|')})`, 'g');
   }, [FULL_HERB_LIST.length]);
 
+  // FIX: Added safe navigation to prevent crash if m.text is undefined (legacy data)
   const estimateTokens = (msgs: Message[]) => {
+     if (!Array.isArray(msgs)) return 0;
      let totalChars = 0;
-     msgs.forEach(m => totalChars += m.text.length);
+     msgs.forEach(m => totalChars += (m.text || '').length);
      return Math.round(totalChars * 0.8) + 100;
   };
 
@@ -536,30 +538,88 @@ const AIChatbotInner: React.FC<Props> = ({
       setActiveSessionId(null);
       setSessions({});
       const init = async () => {
-         const saved = localStorage.getItem(LS_CHAT_SESSIONS_KEY);
-         const lastIdKey = activePatient ? `logicmaster_last_active_session_${activePatient.id}` : 'logicmaster_last_active_session';
-         const lastId = localStorage.getItem(lastIdKey);
-         let loadedSessions = saved ? JSON.parse(saved) : {};
-         
-         if (Object.keys(loadedSessions).length > 0) {
-             setSessions(loadedSessions);
-             if (lastId && loadedSessions[lastId]) {
-                 setActiveSessionId(lastId);
+         try {
+             const saved = localStorage.getItem(LS_CHAT_SESSIONS_KEY);
+             const lastIdKey = activePatient ? `logicmaster_last_active_session_${activePatient.id}` : 'logicmaster_last_active_session';
+             const lastId = localStorage.getItem(lastIdKey);
+             let loadedSessions = saved ? JSON.parse(saved) : {};
+             
+             if (Object.keys(loadedSessions).length > 0) {
+                 setSessions(loadedSessions);
+                 if (lastId && loadedSessions[lastId]) {
+                     setActiveSessionId(lastId);
+                 }
+             } else {
+                 createNewSession();
              }
-         } else {
+         } catch (e) {
+             console.error("Failed to load sessions from LS", e);
              createNewSession();
          }
       };
       init();
   }, [activePatient?.id]);
 
+  // --- OPTIMIZED LOCAL STORAGE PERSISTENCE LOGIC ---
   useEffect(() => {
     if (Object.keys(sessions).length > 0) {
-      localStorage.setItem(LS_CHAT_SESSIONS_KEY, JSON.stringify(sessions));
+        // Helper: Strip Embeddings to save massive space
+        // Vectors are float arrays that take up 90% of storage.
+        // We assume re-vectorization or cloud sync handles the actual vector data.
+        // Local storage just keeps text history for UX.
+        const prepareForStorage = (data: Record<string, Session>) => {
+            const cleanData: Record<string, Session> = {};
+            
+            Object.values(data).forEach(s => {
+                const cleanSession = { ...s };
+                
+                // 1. Strip embeddings from medical record inside session
+                if (cleanSession.medicalRecord) {
+                    cleanSession.medicalRecord = {
+                        ...cleanSession.medicalRecord,
+                        knowledgeChunks: cleanSession.medicalRecord.knowledgeChunks.map(c => ({
+                            ...c,
+                            embedding: undefined 
+                        }))
+                    };
+                }
+                
+                cleanData[s.id] = cleanSession;
+            });
+            return cleanData;
+        };
+
+        const trySave = (data: Record<string, Session>) => {
+            try {
+                localStorage.setItem(LS_CHAT_SESSIONS_KEY, JSON.stringify(data));
+                return true;
+            } catch (e: any) {
+                return false;
+            }
+        };
+
+        // 1. Attempt Safe Save (Stripped Embeddings)
+        const safeData = prepareForStorage(sessions);
+        if (!trySave(safeData)) {
+            console.warn("Storage Quota Exceeded. Triggering aggressive cleanup...");
+            
+            // 2. Aggressive Cleanup: Keep Active + Last 3 Sessions
+            const sorted = Object.values(safeData).sort((a, b) => b.createdAt - a.createdAt);
+            const keepSessions = sorted.filter(s => s.id === activeSessionId || sorted.indexOf(s) < 3);
+            
+            const trimmedData = keepSessions.reduce((acc: any, s) => { acc[s.id] = s; return acc; }, {});
+            
+            if (trySave(trimmedData)) {
+                showToast("⚠️ 本地存储空间已满。系统已自动清理旧会话缓存 (云端存档不受影响)。");
+            } else {
+                showToast("❌ 无法保存：浏览器存储空间严重不足。请尝试清理浏览器数据。");
+            }
+        }
     }
+    
     if (activeSessionId) {
       const lastIdKey = activePatient ? `logicmaster_last_active_session_${activePatient.id}` : 'logicmaster_last_active_session';
-      localStorage.setItem(lastIdKey, activeSessionId);
+      try { localStorage.setItem(lastIdKey, activeSessionId); } catch(e) {}
       const msgs = sessions[activeSessionId]?.messages || [];
       setTokenCount(estimateTokens(msgs));
     }
@@ -822,7 +882,51 @@ const AIChatbotInner: React.FC<Props> = ({
   const handleManualSync = () => { if (activeSessionId) saveCurrentSessionToCloud(activeSessionId); };
   const loadCloudArchive = async () => { setIsCloudArchiveLoading(true); try { const data = await fetchCloudChatSessions(settings, activePatient?.id); setCloudArchiveSessions(data); } finally { setIsCloudArchiveLoading(false); } };
   const handleDeleteCloudSession = async (id: string) => { if (isVisitorMode) return; if (await deleteCloudChatSession(id, settings)) { setCloudArchiveSessions(prev => prev.filter(s => s.id !== id)); if (sessions[id]) { const newSessions = {...sessions}; delete newSessions[id]; setSessions(newSessions); if (activeSessionId === id) setActiveSessionId(null); } } };
-  const handleLoadCloudSession = (cloudSession: CloudChatSession) => { let record: MedicalRecord = cloudSession.medical_record || createEmptyMedicalRecord(); const newSession: Session = { id: cloudSession.id, title: cloudSession.title, messages: cloudSession.messages as Message[], createdAt: cloudSession.created_at, medicalRecord: record, patientId: cloudSession.patient_id }; setSessions(prev => ({ ...prev, [newSession.id]: newSession })); setActiveSessionId(newSession.id); onUpdateMedicalRecord(record); setShowCloudArchive(false); };
+  
+  // FIX: Normalize legacy content to text to prevent crash
+  const handleLoadCloudSession = (cloudSession: CloudChatSession) => { 
+      let record: MedicalRecord = cloudSession.medical_record || createEmptyMedicalRecord(); 
+      
+      let rawMessages: any[] = [];
+      if (Array.isArray(cloudSession.messages)) {
+          rawMessages = cloudSession.messages;
+      } else if (typeof cloudSession.messages === 'string') {
+          try {
+              rawMessages = JSON.parse(cloudSession.messages);
+          } catch(e) {
+              console.warn("Failed to parse cloud messages", e);
+              rawMessages = [];
+          }
+      }
+
+      const safeMessages: Message[] = rawMessages.map(m => {
+          // Sanitize Citations array elements
+          const safeCitations = Array.isArray(m.citations) ? m.citations.filter((c:any) => c && c.content) : [];
+          
+          return {
+              role: m.role || 'user',
+              text: m.text || m.content || '', // Sanitize
+              isError: m.isError || false,
+              attachments: m.attachments || [],
+              citations: safeCitations,
+              searchQuery: m.searchQuery
+          };
+      });
+
+      const newSession: Session = { 
+          id: cloudSession.id, 
+          title: cloudSession.title, 
+          messages: safeMessages, 
+          createdAt: cloudSession.created_at, 
+          medicalRecord: record, 
+          patientId: cloudSession.patient_id 
+      }; 
+      setSessions(prev => ({ ...prev, [newSession.id]: newSession })); 
+      setActiveSessionId(newSession.id); 
+      onUpdateMedicalRecord(record); 
+      setShowCloudArchive(false); 
+  };
+
   const handleStartEditTitle = (session: Session) => { setEditingSessionId(session.id); setEditingTitle(session.title); };
   const handleSaveTitle = () => { if (!editingSessionId || !editingTitle.trim()) { setEditingSessionId(null); return; } setSessions(prev => { const newSessions = { ...prev }; if (newSessions[editingSessionId]) { newSessions[editingSessionId].title = editingTitle.trim(); } return newSessions; }); setEditingSessionId(null); };
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -833,7 +937,10 @@ const AIChatbotInner: React.FC<Props> = ({
       .filter((s) => !s.id.startsWith('medical_record_master_'))
       .sort((a, b) => b.createdAt - a.createdAt);
   
-  const activeMessages = activeSessionId ? sessions[activeSessionId]?.messages || [] : [];
+  // FIX: Memoize active messages to prevent unnecessary render cycles
+  const activeMessages = useMemo(() => {
+      return activeSessionId ? sessions[activeSessionId]?.messages || [] : [];
+  }, [activeSessionId, sessions]);
   
   const SessionList = () => (
      <div className="flex flex-col h-full">
