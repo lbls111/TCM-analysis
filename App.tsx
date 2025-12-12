@@ -366,26 +366,20 @@ function LogicMasterApp() {
   }, [aiSettings]);
   
   // Optimize LocalStorage Saving for Medical Record
+  // CRITICAL FIX: ALWAYS strip embeddings to prevent quota errors
   useEffect(() => {
+      const safeRecord = {
+          ...medicalRecord,
+          knowledgeChunks: medicalRecord.knowledgeChunks.map(c => ({
+              ...c,
+              embedding: undefined // Strip embeddings for LS persistence
+          }))
+      };
       try {
-          localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(medicalRecord));
+          localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(safeRecord));
       } catch (e: any) {
-          if (e.name === 'QuotaExceededError') {
-              console.warn("Storage quota exceeded for medical record. Stripping embeddings...");
-              // Safe fallback: Strip embeddings (heavy data) from local cache
-              const safeRecord = {
-                  ...medicalRecord,
-                  knowledgeChunks: medicalRecord.knowledgeChunks.map(c => ({
-                      ...c,
-                      embedding: undefined // Strip embeddings for LS persistence
-                  }))
-              };
-              try {
-                  localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(safeRecord));
-              } catch (retryE) {
-                  console.error("Critical: Failed to save medical record to LS even after stripping.", retryE);
-              }
-          }
+          console.error("Critical: Failed to save medical record to LS even after stripping.", e);
+          // If still failing, try stripping content for very old chunks or just fail gracefully
       }
   }, [medicalRecord]);
   
