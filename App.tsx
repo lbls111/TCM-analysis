@@ -12,7 +12,7 @@ import { AIChatbot } from './components/AIChatbot';
 import { AISettingsModal } from './components/AISettingsModal';
 import { ModeSelector } from './components/ModeSelector';
 import { PromptEditorModal } from './components/PromptEditorModal';
-import { MedicalRecordManager } from './components/MedicalRecordManager';
+// Removed MedicalRecordManager import
 import { PatientManager } from './components/PatientManager';
 import { FULL_HERB_LIST, registerDynamicHerb, loadCustomHerbs } from './data/herbDatabase';
 import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, DEFAULT_EMBEDDING_MODEL, DEFAULT_RERANK_MODEL, VECTOR_API_KEY, VECTOR_API_URL, VISITOR_DEFAULT_CHAT_MODEL, DEFAULT_ORGANIZE_MODEL } from './constants';
@@ -48,7 +48,7 @@ const sortVersions = (versions: string[]) => {
 const NAV_ITEMS = [
   { id: ViewMode.WORKSHOP, label: '计算工坊', icon: '🧮' },
   { id: ViewMode.VISUAL, label: '三焦动力', icon: '☯️' },
-  { id: ViewMode.MEDICAL_RECORD, label: '电子病历', icon: '📋' }, // New Module
+  // MEDICAL_RECORD removed
   { id: ViewMode.REPORT, label: 'AI 推演', icon: '📝' },
   { id: ViewMode.AI_CHAT, label: 'AI 问答', icon: '🤖' },
   { id: ViewMode.DATABASE, label: '药典库', icon: '📚' }
@@ -366,20 +366,12 @@ function LogicMasterApp() {
   }, [aiSettings]);
   
   // Optimize LocalStorage Saving for Medical Record
-  // CRITICAL FIX: ALWAYS strip embeddings to prevent quota errors
+  // Simplified for text-only mode (no embeddings to strip)
   useEffect(() => {
-      const safeRecord = {
-          ...medicalRecord,
-          knowledgeChunks: medicalRecord.knowledgeChunks.map(c => ({
-              ...c,
-              embedding: undefined // Strip embeddings for LS persistence
-          }))
-      };
       try {
-          localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(safeRecord));
+          localStorage.setItem(LS_MEDICAL_RECORD_KEY, JSON.stringify(medicalRecord));
       } catch (e: any) {
-          console.error("Critical: Failed to save medical record to LS even after stripping.", e);
-          // If still failing, try stripping content for very old chunks or just fail gracefully
+          console.error("Critical: Failed to save medical record to LS.", e);
       }
   }, [medicalRecord]);
   
@@ -457,7 +449,8 @@ function LogicMasterApp() {
           addLog('info', 'Patient', `Switched to patient: ${patient.name}`);
           setReports({}); 
           setCloudReports([]); 
-          setView(ViewMode.MEDICAL_RECORD); 
+          // Default to chat or input for patients, since record is now modal based
+          setView(ViewMode.AI_CHAT); 
           setInput(''); 
       } else {
           setMedicalRecord(createEmptyMedicalRecord());
@@ -576,51 +569,7 @@ function LogicMasterApp() {
       }
   };
 
-  const handleSaveMedicalRecordToCloud = async () => {
-      if (!activePatient) {
-          if (isVisitorMode) {
-              alert("访客模式限制：无法保存到云端。请切换至管理员模式或配置私有数据库。");
-              return;
-          }
-          if (!activeAiSettings.supabaseKey) {
-              alert("保存失败：未配置云数据库。");
-              return;
-          }
-          
-          const recordId = `medical_record_master_${Date.now()}`;
-          let title = "电子病历存档 (未关联患者)";
-          if (medicalRecord.basicInfo.name) {
-              title += ` - ${medicalRecord.basicInfo.name}`;
-          }
-          
-          addLog('info', 'Cloud', 'Saving Medical Record Archive (Standalone)...', { id: recordId, title });
-          
-          try {
-              const success = await saveCloudChatSession({
-                  id: recordId,
-                  title: title,
-                  messages: [{
-                      role: 'system', 
-                      text: `[SYSTEM] 这是一个电子病历快照存档。包含 ${medicalRecord.knowledgeChunks.length} 条向量化知识片段。`
-                  }],
-                  medical_record: medicalRecord,
-                  created_at: Date.now()
-              }, activeAiSettings);
-
-              if (success) {
-                  addLog('success', 'Cloud', 'Medical record archive saved.');
-                  alert("☁️ 病历数据已成功同步至云端！\n您可以在【历史档案】中查看。");
-              } else {
-                  throw new Error("Save returned false");
-              }
-          } catch (e: any) {
-              addLog('error', 'Cloud', 'Save failed', { error: e.message });
-              alert(`保存失败: ${e.message}`);
-          }
-          return;
-      }
-      alert("在【患者管理】模式下，病历修改会自动保存到患者档案，无需手动归档。\n如需创建历史副本，请手动导出或截图。");
-  };
+  // Removed handleSaveMedicalRecordToCloud - it's handled via the Modal or Auto-save now
 
   const handleAskAI = async (mode: 'deep' | 'quick' | 'regenerate', regenerateInstructions?: string) => {
     if (!analysis) return;
@@ -920,6 +869,7 @@ function LogicMasterApp() {
       }
   };
 
+  // ... (getTempBadgeStyle, renderCalculationTable - KEEP AS IS) ...
   const getTempBadgeStyle = (temp: string) => {
     if (temp.includes('大热') || temp.includes('热')) return 'bg-rose-100 text-rose-700 border-rose-200';
     if (temp.includes('温')) return 'bg-orange-100 text-orange-700 border-orange-200';
@@ -1245,7 +1195,6 @@ function LogicMasterApp() {
       <MobileBottomNav currentView={view} setView={setView} />
 
       <main className={`flex-1 overflow-hidden relative ${view === ViewMode.INPUT ? 'flex items-center justify-center p-6' : 'w-full'}`}>
-        {/* ... (Existing view components remain same) ... */}
         
         {view === ViewMode.INPUT && (
           <div className="w-full max-w-3xl animate-in zoom-in-95 duration-500 overflow-y-auto max-h-full p-4 custom-scrollbar">
@@ -1355,20 +1304,6 @@ function LogicMasterApp() {
              </div>
           </div>
         )}
-
-        <div ref={mainScrollRef} className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.MEDICAL_RECORD ? 'block' : 'hidden'}`}>
-             <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">
-                <MedicalRecordManager 
-                    record={medicalRecord} 
-                    onUpdate={setMedicalRecord} 
-                    onSaveToCloud={handleSaveMedicalRecordToCloud}
-                    isAdminMode={isAdminMode}
-                    settings={activeAiSettings} // Pass settings for fetching history
-                    activePatient={activePatient} // Pass active patient
-                    isVisible={view === ViewMode.MEDICAL_RECORD} // FIX: Pass visibility prop
-                />
-             </div>
-        </div>
 
         <div ref={mainScrollRef} className={`h-full w-full overflow-y-auto animate-in zoom-in-95 ${view === ViewMode.DATABASE ? 'block' : 'hidden'}`}>
              <div className="max-w-[1600px] mx-auto h-full p-4 lg:p-8 pb-24 lg:pb-8">

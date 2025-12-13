@@ -34,7 +34,7 @@ export enum ViewMode {
   INPUT = 'INPUT',
   WORKSHOP = 'WORKSHOP',
   VISUAL = 'VISUAL',
-  MEDICAL_RECORD = 'MEDICAL_RECORD', // New Module
+  // MEDICAL_RECORD Removed - No longer a separate page
   REPORT = 'REPORT',
   AI_CHAT = 'AI_CHAT',
   DATABASE = 'DATABASE'
@@ -270,72 +270,71 @@ export interface LogEntry {
   details?: any; // JSON object for detailed payload
 }
 
-// === Knowledge Base Interfaces (RAG) ===
+// === Knowledge Base Interfaces (Legacy RAG - Kept for compatibility but unused) ===
 export interface MedicalKnowledgeChunk {
   id: string;
   content: string;
-  sourceType: 'manual' | 'import' | 'chat'; // Where this chunk came from
-  tags: string[]; // e.g. '主诉', '检验', '病史'
-  embedding?: number[]; // Vector array
+  sourceType: 'manual' | 'import' | 'chat'; 
+  tags: string[]; 
+  embedding?: number[]; 
   createdAt: number;
-}
-
-// === Structured Medical Record Interface (Updated) ===
-export interface BloodPressureReading {
-  id: string;
-  date: string;
-  reading: string; // e.g., "120/80"
-  heartRate: string; // e.g., "75"
-  context?: string; // NEW: To store "早上 左手" etc.
 }
 
 export interface LabResult {
   id: string;
+  date: string;
   item: string;
   result: string;
+}
+
+export interface BloodPressureReading {
+  id: string;
   date: string;
+  reading: string;
+  heartRate: string;
+  context?: string;
 }
 
 export interface TreatmentPlanEntry {
-    id: string;
-    date: string;
-    plan: string;
+  id: string;
+  date: string;
+  plan: string;
 }
 
+// === Medical Record Interface ===
 export interface MedicalRecord {
-  // Knowledge Base (Core for RAG)
-  knowledgeChunks: MedicalKnowledgeChunk[];
+  // THE CORE: The full, raw text of the medical record
+  fullText: string;
+
+  // Basic structured info for UI headers (Name, etc.)
+  basicInfo: { name: string; gender: string; age: string; };
   
-  // Structured Fields (Legacy / Hybrid)
-  basicInfo: { name: string; gender: string; age: string; marital: string; occupation: string; season: string; };
-  chiefComplaint: string;
-  historyOfPresentIllness: string;
-  pastHistory: string;
-  allergies: string;
-  currentSymptoms: {
-    coldHeat: string;
-    sweat: string;
-    headBody: string;
-    stoolsUrine: string;
-    diet: string;
-    sleep: string;
-    emotion: string;
-    gynecology: string;
-    patientFeedback: string;
-  };
+  knowledgeChunks: MedicalKnowledgeChunk[]; 
+
+  // Structured fields needed for parsing/management
+  chiefComplaint?: string;
+  historyOfPresentIllness?: string;
+  pastHistory?: string;
+  allergies?: string;
+  
+  currentSymptoms?: Record<string, string>;
+  
   physicalExam: {
-    tongue: string;
-    pulse: string;
-    general: string;
+    tongue?: string;
+    pulse?: string;
+    general?: string;
     bloodPressureReadings: BloodPressureReading[];
   };
+  
   auxExams: {
     labResults: LabResult[];
-    other: string;
+    imaging?: string;
+    other?: string;
   };
+  
   diagnosis: {
-    tcm: string;
-    western: string;
+    tcm?: string;
+    western?: string;
     treatmentPlans: TreatmentPlanEntry[];
   };
 }
